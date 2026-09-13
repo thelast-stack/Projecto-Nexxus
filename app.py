@@ -13,10 +13,12 @@ from nexxus_logistica import (
     Point,
     Resource,
     StageState,
+    complete_operation,
     create_operation,
     create_plan,
     create_replanned_plan,
     measure_operation,
+    start_operation,
     validate_demand,
 )
 
@@ -222,7 +224,7 @@ class App(BaseHTTPRequestHandler):
             resource = RESOURCES[oid]
             return f"""
 <div class="card"><h2>Operação planeada</h2>
-<p>Plano v{plan.version} · Recurso: <b>{resource.name}</b> · Capacidade: <b>{resource.capacity:g} {demand.unit.unit}</b></p>
+<p>Plano v{plan.version} · Recurso: <b>{resource.name}</b> · Capacidade: <b>{plan.capacity.quantity:g} {demand.unit.unit}</b> ({plan.capacity.state.value})</p>
 <form method="post" action="/action"><input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="prepare">
 <button>Preparar operação</button></form></div>"""
 
@@ -248,11 +250,14 @@ class App(BaseHTTPRequestHandler):
 
         # COMPLETED
         measurement = MEASUREMENTS.get(oid, {})
+        plan = PLANS.get(oid)
+        capacity_line = f'<p><b>Capacidade:</b> {plan.capacity.state.value}</p>' if plan else ""
         return f"""
 <div class="card ok"><h2>Resultado</h2>
 <p><b>Resultado:</b> {operation.result}</p>
 <p><b>Evidência:</b> {operation.evidence}</p>
-<p><b>Desvio de duração:</b> {measurement.get("duration_deviation_hours", "—")} h</p></div>"""
+<p><b>Desvio de duração:</b> {measurement.get("duration_deviation_hours", "—")} h</p>
+{capacity_line}</div>"""
 
     def render_execution_card(self, operation, oid: str) -> str:
         current_stage = next((s for s in operation.stages if s.state == StageState.IN_EXECUTION), None)
@@ -385,7 +390,7 @@ class App(BaseHTTPRequestHandler):
             elif action == "prepare":
                 operation.prepare()
             elif action == "start":
-                operation.start()
+                start_operation(operation, PLANS[demand_id])
                 demand.state = DemandState.IN_EXECUTION
             elif action == "start_stage":
                 self.find_stage(operation, value("stage_id")).start()
@@ -398,7 +403,7 @@ class App(BaseHTTPRequestHandler):
             elif action == "replan":
                 self.action_replan(demand, demand_id, operation, value)
             elif action == "complete":
-                operation.complete(value("result"), value("evidence"))
+                complete_operation(operation, PLANS[demand_id], value("result"), value("evidence"))
                 MEASUREMENTS[demand_id] = measure_operation(demand.unit.quantity, demand.unit.quantity, 8, 9.5)
                 demand.state = DemandState.COMPLETED
         except ValueError as exc:
