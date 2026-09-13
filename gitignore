@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Base de dados local do protótipo — cada máquina/ambiente tem a sua.
+nexxus.db
+nexxus.db-wal
+nexxus.db-shm
