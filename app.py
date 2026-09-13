@@ -2,6 +2,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import storage
 from nexxus_logistica import (
     Demand,
     DemandState,
@@ -24,6 +25,13 @@ RESOURCES = {}
 PLANS = {}
 OPERATIONS = {}
 MEASUREMENTS = {}
+
+storage.init_db()
+DEMANDS.update(storage.load_demands())
+RESOURCES.update(storage.load_resources())
+PLANS.update(storage.load_plans())
+OPERATIONS.update(storage.load_operations())
+MEASUREMENTS.update(storage.load_measurements())
 
 STYLE = """
 body{font-family:Arial,sans-serif;max-width:980px;margin:0 auto;background:#f5f6f8;padding:28px;color:#20242a}
@@ -60,6 +68,19 @@ def page(body: str) -> str:
 
 def field_value(form_data: dict, key: str) -> str:
     return form_data.get(key, [""])[0].strip()
+
+
+def persist(demand_id: str) -> None:
+    if demand_id in DEMANDS:
+        storage.save_demand(DEMANDS[demand_id])
+    if demand_id in RESOURCES:
+        storage.save_resource(demand_id, RESOURCES[demand_id])
+    if demand_id in PLANS:
+        storage.save_plan(demand_id, PLANS[demand_id])
+    if demand_id in OPERATIONS:
+        storage.save_operation(demand_id, OPERATIONS[demand_id])
+    if demand_id in MEASUREMENTS:
+        storage.save_measurement(demand_id, MEASUREMENTS[demand_id])
 
 
 class App(BaseHTTPRequestHandler):
@@ -345,6 +366,7 @@ class App(BaseHTTPRequestHandler):
         )
         validate_demand(demand)
         DEMANDS[demand_id] = demand
+        persist(demand_id)
         self.redirect(f"/operation?id={demand_id}")
 
     def handle_action(self, value) -> None:
@@ -383,6 +405,7 @@ class App(BaseHTTPRequestHandler):
             self.send_page(f"<h1>Ação não pode ser concluída</h1><p>{exc}</p>", 400)
             return
 
+        persist(demand_id)
         self.redirect(f"/operation?id={demand_id}")
 
     def action_plan(self, demand: Demand, demand_id: str, value) -> None:
