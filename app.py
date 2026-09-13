@@ -411,6 +411,9 @@ class App(BaseHTTPRequestHandler):
         operation.register_exception(exception)
 
     def action_replan(self, demand: Demand, demand_id: str, operation, value) -> None:
+        if not operation.exceptions or operation.state != OperationState.EXCEPTION:
+            raise ValueError("Não há exceção pendente para replanear")
+
         old_plan = PLANS[demand_id]
         resource = RESOURCES[demand_id]
         new_plan = create_replanned_plan(demand, resource, f"P-{demand_id}-v{old_plan.version + 1}", old_plan)
