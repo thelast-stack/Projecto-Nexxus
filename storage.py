@@ -17,6 +17,8 @@ from pathlib import Path
 
 from nexxus_logistica import (
     Allocation,
+    Capacity,
+    CapacityState,
     Demand,
     DemandState,
     Event,
@@ -118,8 +120,17 @@ def _demand_from_dict(d: dict) -> Demand:
 
 def _plan_from_dict(d: dict) -> Plan:
     a = d["allocation"]
+    c = d["capacity"]
+    capacity = Capacity(
+        id=c["id"],
+        resource_id=c["resource_id"],
+        quantity=c["quantity"],
+        unit=c.get("unit", "kg"),
+        state=CapacityState(c["state"]),
+    )
     allocation = Allocation(
         resource_id=a["resource_id"],
+        capacity_id=a["capacity_id"],
         quantity=a["quantity"],
         state=a.get("state", "allocated"),
         start=_parse_dt(a.get("start")),
@@ -129,6 +140,7 @@ def _plan_from_dict(d: dict) -> Plan:
         id=d["id"],
         demand_id=d["demand_id"],
         allocation=allocation,
+        capacity=capacity,
         version=d.get("version", 1),
         state=d.get("state", "active"),
         planned_start=_parse_dt(d.get("planned_start")),
