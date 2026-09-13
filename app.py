@@ -1,7 +1,7 @@
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
-from nexxus_logistica import Demand, LogisticsUnit, Point, Resource, create_plan, create_operation, validate_demand, create_replanned_plan, LogisticsException, ExceptionState, OperationState
+from nexxus_logistica import Demand, LogisticsUnit, Point, Resource, create_plan, create_operation, validate_demand, create_replanned_plan, LogisticsException, ExceptionState, OperationState, measure_operation
 
 DEMANDS={}; RESOURCES={}; PLANS={}; OPERATIONS={}; EXCEPTIONS={}; MEASUREMENTS={}
 
@@ -24,16 +24,16 @@ class App(BaseHTTPRequestHandler):
         if p.path=='/new':
             return self.send_page('''<h1>Nova demanda</h1><p class="muted">Aqui descrevemos apenas a necessidade. Recurso e capacidade entram no planeamento.</p><form method="post" action="/create"><div class="card"><h3>Quem solicita?</h3><div class="field"><label>Cliente / solicitante *</label><input name="client" required></div></div><div class="card"><h3>O que precisa ser movimentado?</h3><div class="grid"><div class="field"><label>Descrição *</label><input name="description" placeholder="Ex.: Farinha de trigo" required></div><div class="field"><label>Quantidade *</label><input name="quantity" type="number" min="0.01" step="0.01" required></div><div class="field"><label>Unidade *</label><select name="unit"><option>t</option><option>kg</option><option>un</option></select></div></div></div><div class="card"><h3>De onde para onde?</h3><div class="grid"><div class="field"><label>Origem *</label><input name="origin" required></div><div class="field"><label>Destino *</label><input name="destination" required></div></div></div><div class="card"><h3>Quando e em que condições?</h3><div class="grid"><div class="field"><label>Prazo</label><input name="deadline" type="datetime-local"></div><div class="field"><label>Condições / restrições</label><input name="conditions"></div></div><div class="field"><label>Observações</label><textarea name="notes"></textarea></div></div><button>Criar e validar demanda</button> <a class="btn secondary" href="/">Cancelar</a></form>''')
         if p.path=='/operation':
-            oid=val(parse_qs(p.query),'id'); d=DEMANDS.get(oid); op=OPERATIONS.get(oid)
-            if not d: return self.send_page('<h1>Demanda não encontrada</h1>',404)
-            state=op.state if op else d.state
+            oid=val(parse_qs(p.query),'id'); demand=DEMANDS.get(oid); op=OPERATIONS.get(oid)
+            if not demand: return self.send_page('<h1>Demanda não encontrada</h1>',404)
+            state=op.state if op else demand.state
             flow='<div class="flow"><span class="active">Demanda</span><span class="active">Planeamento</span><span class="active">Operação</span><span class="active">Execução</span><span>Resultado</span></div>'
-            pedido=f'<div class="card"><h2>Demanda</h2><p><b>Solicitante:</b> {d.conditions[0] if d.conditions else "—"}</p><p><b>O que:</b> {getattr(d,"description","")} · <b>Quantidade:</b> {d.unit.quantity:g} {d.unit.unit}</p><p><b>Origem:</b> {d.origin.name} → <b>Destino:</b> {d.destination.name}</p><p><b>Prazo:</b> {d.deadline or "não definido"}</p><p><b>Estado:</b> {state.value}</p></div>'
+            pedido=f'<div class="card"><h2>Demanda</h2><p><b>Solicitante:</b> {demand.conditions[0] if demand.conditions else "—"}</p><p><b>O que:</b> {getattr(demand,"description","")} · <b>Quantidade:</b> {demand.unit.quantity:g} {demand.unit.unit}</p><p><b>Origem:</b> {demand.origin.name} → <b>Destino:</b> {demand.destination.name}</p><p><b>Prazo:</b> {demand.deadline or "não definido"}</p><p><b>Estado:</b> {state.value}</p></div>'
             action=''
             if not op:
-                action=f'<div class="card"><h2>Planeamento</h2><p>Escolha o recurso e a capacidade para esta demanda.</p><form method="post" action="/action"><input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="plan"><div class="grid"><div class="field"><label>Recurso *</label><input name="resource" placeholder="Camião 01" required></div><div class="field"><label>Capacidade ({d.unit.unit}) *</label><input name="capacity" type="number" min="0.01" step="0.01" required></div></div><button>Criar plano</button></form></div>'
+                action=f'<div class="card"><h2>Planeamento</h2><p>Escolha o recurso e a capacidade para esta demanda.</p><form method="post" action="/action"><input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="plan"><div class="grid"><div class="field"><label>Recurso *</label><input name="resource" placeholder="Camião 01" required></div><div class="field"><label>Capacidade ({demand.unit.unit}) *</label><input name="capacity" type="number" min="0.01" step="0.01" required></div></div><button>Criar plano</button></form></div>'
             elif state==OperationState.PLANNED:
-                action=f'<div class="card"><h2>Operação planeada</h2><p>Plano v{PLANS[oid].version} · Recurso: {RESOURCES[oid].name} · Capacidade: {RESOURCES[oid].capacity:g} {d.unit.unit}</p><p>Etapas: '+', '.join(s.name for s in op.stages)+f'</p><form method="post" action="/action"><input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="prepare"><button>Preparar operação</button></form></div>'
+                action=f'<div class="card"><h2>Operação planeada</h2><p>Plano v{PLANS[oid].version} · Recurso: {RESOURCES[oid].name} · Capacidade: {RESOURCES[oid].capacity:g} {demand.unit.unit}</p><p>Etapas: '+', '.join(s.name for s in op.stages)+f'</p><form method="post" action="/action"><input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="prepare"><button>Preparar operação</button></form></div>'
             elif state==OperationState.PREPARED:
                 action=f'<div class="card"><h2>Operação preparada</h2><p>Todas as etapas estão preparadas.</p><form method="post" action="/action"><input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="start"><button>Iniciar execução</button></form></div>'
             elif state==OperationState.IN_EXECUTION:
@@ -53,7 +53,7 @@ class App(BaseHTTPRequestHandler):
             return self.send_page(f'<h1>Demanda #{oid}</h1>{flow}{pedido}{action}<div class="card"><h2>Etapas</h2><ol>{stages}</ol></div><div class="card"><h2>Linha do tempo</h2><ol>{timeline}</ol></div><a class="btn secondary" href="/">Voltar</a>')
         return self.send_page('<h1>404</h1>',404)
     def do_POST(self):
-        d=form(self); q=lambda k:val(d,k)
+        form_data=form(self); q=lambda k:val(form_data,k)
         if self.path=='/create':
             try: qty=float(q('quantity'))
             except ValueError: qty=0
@@ -62,11 +62,11 @@ class App(BaseHTTPRequestHandler):
             demand=Demand(oid,LogisticsUnit(f"U-{len(DEMANDS)+1:03d}",qty,q('unit')),Point(f"P-{len(DEMANDS)+1:03d}A",q('origin')),Point(f"P-{len(DEMANDS)+1:03d}B",q('destination')),deadline,conditions=[q('client'),q('conditions'),q('notes')])
             demand.description=q('description'); validate_demand(demand); DEMANDS[oid]=demand; self.redirect('/operation?id='+oid); return
         if self.path=='/action':
-            oid=q('id'); d=DEMANDS[oid]; action=q('action'); op=OPERATIONS.get(oid)
+            oid=q('id'); demand=DEMANDS[oid]; action=q('action'); op=OPERATIONS.get(oid)
             if action=='plan':
                 try: cap=float(q('capacity'))
                 except ValueError: cap=0
-                r=Resource(f"R-{oid}",q('resource'),cap,d.unit.unit); p=create_plan(d,r,f"P-{oid}-v1"); o=create_operation(d,p,f"O-{oid}"); RESOURCES[oid]=r; PLANS[oid]=p; OPERATIONS[oid]=o
+                r=Resource(f"R-{oid}",q('resource'),cap,demand.unit.unit); p=create_plan(demand,r,f"P-{oid}-v1"); o=create_operation(demand,p,f"O-{oid}"); RESOURCES[oid]=r; PLANS[oid]=p; OPERATIONS[oid]=o
             elif action=='prepare': op.prepare()
             elif action=='start': op.start()
             elif action=='start_stage': next(s for s in op.stages if s.id==q('stage_id')).start()
@@ -75,8 +75,8 @@ class App(BaseHTTPRequestHandler):
             elif action=='exception':
                 e=LogisticsException(f"X-{oid}-{len(op.exceptions)+1}",q('description'),'media','impacto operacional',stage_id=next((s.id for s in op.stages if s.state.value=='in_execution'),None)); EXCEPTIONS[e.id]=e; op.register_exception(e)
             elif action=='replan':
-                old=PLANS[oid]; r=RESOURCES[oid]; p=create_replanned_plan(d,r,f"P-{oid}-v{old.version+1}",old); PLANS[oid]=p; ex=op.exceptions[-1]; ex.evaluate(q('description'),'replanear'); ex.treat(q('description')); op.replan(p); ex.close()
-            elif action=='complete': op.complete(q('result'),q('evidence')); MEASUREMENTS[oid]=measure_operation(d.unit.quantity,d.unit.quantity,8,9.5)
+                old=PLANS[oid]; r=RESOURCES[oid]; p=create_replanned_plan(demand,r,f"P-{oid}-v{old.version+1}",old); PLANS[oid]=p; ex=op.exceptions[-1]; ex.evaluate(q('description'),'replanear'); ex.treat(q('description')); op.replan(p); ex.close()
+            elif action=='complete': op.complete(q('result'),q('evidence')); MEASUREMENTS[oid]=measure_operation(demand.unit.quantity,demand.unit.quantity,8,9.5)
             self.redirect('/operation?id='+oid); return
         self.redirect('/')
 
