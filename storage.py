@@ -36,7 +36,7 @@ from nexxus_logistica import (
 
 DB_PATH = os.environ.get("NEXXUS_DB_PATH", str(Path(__file__).parent / "nexxus.db"))
 
-_TABLES = ("demands", "resources", "plans", "operations", "measurements")
+_TABLES = ("demands", "resources", "resource_catalog", "plans", "operations", "measurements")
 
 
 def _connect() -> sqlite3.Connection:
@@ -101,6 +101,10 @@ def save_demand(demand: Demand) -> None:
 
 def save_resource(key: str, resource: Resource) -> None:
     _save("resources", key, asdict(resource))
+
+
+def save_catalog_resource(resource: Resource) -> None:
+    _save("resource_catalog", resource.id, asdict(resource))
 
 
 def save_plan(key: str, plan: Plan) -> None:
@@ -183,6 +187,8 @@ def _event_from_dict(d: dict) -> Event:
         timestamp=_parse_dt(d["timestamp"]),
         description=d.get("description", ""),
         stage_id=d.get("stage_id"),
+        location=d.get("location"),
+        quantity=d.get("quantity"),
     )
 
 
@@ -221,6 +227,10 @@ def load_demands() -> dict:
 
 def load_resources() -> dict:
     return _load_typed("resources", lambda value: Resource(**value))
+
+
+def load_catalog_resources() -> dict:
+    return _load_typed("resource_catalog", lambda value: Resource(**value))
 
 
 def load_plans() -> dict:

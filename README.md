@@ -34,6 +34,15 @@ Depois abrir `http://localhost:8000`.
 - Exceção regista tipo, gravidade e descrição reais introduzidos pelo operador (antes eram valores fixos).
 - GitHub Actions: PASS — validado adicionalmente com um teste de regressão que chama `create_replanned_plan` (a função real usada pelo `app.py`), não apenas a construção manual de um `Plan`.
 
+## Catálogo de recursos, etapas dinâmicas e eventos com localização/quantidade
+
+- **Catálogo de recursos** (`/resources`): recursos são adicionados uma vez e reutilizados em vários
+  planos, em vez de cada plano criar um recurso novo a partir de texto livre.
+- **Etapas dinâmicas**: o planeamento permite definir os nomes das etapas (`create_operation` aceita
+  `stage_names`); em branco, usa o padrão `pickup, transport, delivery`.
+- **Eventos com localização e quantidade**: `Event` ganhou campos opcionais `location` e `quantity`,
+  visíveis na linha do tempo da operação.
+
 ## Capacidade
 
 Capacidade é um objeto próprio (`Capacity`), com o ciclo `Disponível → Reservada → Utilizada →

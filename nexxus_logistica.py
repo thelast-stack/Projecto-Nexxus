@@ -169,6 +169,8 @@ class Event:
     timestamp: datetime
     description: str = ""
     stage_id: str | None = None
+    location: str | None = None
+    quantity: float | None = None
 
 
 @dataclass
@@ -229,8 +231,15 @@ class Operation:
         self.state = OperationState.IN_EXECUTION
         self.register_event("operation_started")
 
-    def register_event(self, event_type: str, description: str = "", stage_id: str | None = None) -> Event:
-        event = Event(f"E-{len(self.events) + 1:03d}", event_type, datetime.now(), description, stage_id)
+    def register_event(
+        self,
+        event_type: str,
+        description: str = "",
+        stage_id: str | None = None,
+        location: str | None = None,
+        quantity: float | None = None,
+    ) -> Event:
+        event = Event(f"E-{len(self.events) + 1:03d}", event_type, datetime.now(), description, stage_id, location, quantity)
         self.events.append(event)
         return event
 
@@ -356,14 +365,19 @@ def complete_operation(operation: Operation, plan: Plan, result: str, evidence: 
     plan.capacity.release()
 
 
-def create_operation(demand: Demand, plan: Plan, operation_id: str) -> Operation:
+def create_operation(
+    demand: Demand,
+    plan: Plan,
+    operation_id: str,
+    stage_names: list[str] | None = None,
+) -> Operation:
     if plan.demand_id != demand.id:
         raise ValueError("Plan does not belong to demand")
     resource_id = plan.allocation.resource_id
+    names = stage_names or ["pickup", "transport", "delivery"]
     stages = [
-        Stage(f"{operation_id}-S1", "pickup", 1, resource_id=resource_id),
-        Stage(f"{operation_id}-S2", "transport", 2, resource_id=resource_id),
-        Stage(f"{operation_id}-S3", "delivery", 3, resource_id=resource_id),
+        Stage(f"{operation_id}-S{sequence}", name, sequence, resource_id=resource_id)
+        for sequence, name in enumerate(names, start=1)
     ]
     return Operation(id=operation_id, demand_id=demand.id, plan_id=plan.id, stages=stages)
 

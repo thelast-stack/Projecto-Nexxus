@@ -24,6 +24,7 @@ from nexxus_logistica import (
 
 DEMANDS = {}
 RESOURCES = {}
+RESOURCE_CATALOG = {}
 PLANS = {}
 OPERATIONS = {}
 MEASUREMENTS = {}
@@ -31,6 +32,7 @@ MEASUREMENTS = {}
 storage.init_db()
 DEMANDS.update(storage.load_demands())
 RESOURCES.update(storage.load_resources())
+RESOURCE_CATALOG.update(storage.load_catalog_resources())
 PLANS.update(storage.load_plans())
 OPERATIONS.update(storage.load_operations())
 MEASUREMENTS.update(storage.load_measurements())
@@ -116,6 +118,10 @@ class App(BaseHTTPRequestHandler):
             self.render_new_demand_form()
             return
 
+        if parsed.path == "/resources":
+            self.render_resources()
+            return
+
         if parsed.path == "/operation":
             query = parse_qs(parsed.query)
             demand_id = field_value(query, "id")
@@ -137,7 +143,7 @@ class App(BaseHTTPRequestHandler):
             "<h1>NEXXUS LOGÍSTICA</h1>"
             '<p class="muted">Demanda → Planeamento → Preparação → Execução → '
             "Exceção/Replaneamento → Resultado/Medição.</p>"
-            '<p><a class="button" href="/new">+ Nova demanda</a></p>'
+            '<p><a class="button" href="/new">+ Nova demanda</a> <a class="button secondary" href="/resources">Recursos</a></p>'
             + (cards or '<div class="card">Nenhuma demanda registada.</div>')
         )
 
@@ -175,6 +181,29 @@ class App(BaseHTTPRequestHandler):
 </div>
 </form>""")
 
+    def render_resources(self) -> None:
+        rows = "".join(
+            f"<li>{r.name} — {r.capacity:g} {r.unit} — "
+            f"<b>{'disponível' if r.available else 'indisponível'}</b></li>"
+            for r in RESOURCE_CATALOG.values()
+        )
+        self.send_page(f"""
+<h1>Recursos</h1>
+<p class="muted">Recursos disponíveis para alocar a planos. Consulte aqui antes de planear uma operação.</p>
+<div class="card"><h2>Catálogo</h2>
+<ol>{rows or "<li>Nenhum recurso registado ainda.</li>"}</ol></div>
+<div class="card"><h2>Adicionar recurso</h2>
+<form method="post" action="/resources">
+<div class="grid">
+<div class="field"><label>Nome *</label><input name="name" placeholder="Ex.: Camião 01" required></div>
+<div class="field"><label>Capacidade *</label><input name="capacity" type="number" min="0.01" step="0.01" required></div>
+<div class="field"><label>Unidade *</label>
+<select name="unit"><option value="t">toneladas (t)</option><option value="kg">quilogramas (kg)</option><option value="un">unidades (un)</option></select>
+</div>
+</div>
+<button>Adicionar ao catálogo</button></form></div>
+<a class="button secondary" href="/">Voltar</a>""")
+
     def render_operation(self, demand_id: str) -> None:
         demand = DEMANDS.get(demand_id)
         if not demand:
@@ -208,14 +237,24 @@ class App(BaseHTTPRequestHandler):
         oid = demand.id
 
         if operation is None:
+            compatible = [r for r in RESOURCE_CATALOG.values() if r.unit == demand.unit.unit and r.available]
+            if not compatible:
+                return f"""
+<div class="card warn"><h2>Planeamento</h2>
+<p>Não há recursos no catálogo compatíveis com "{demand.unit.unit}".</p>
+<a class="button" href="/resources">Adicionar recurso</a></div>"""
+
+            options = "".join(
+                f'<option value="{r.id}">{r.name} — {r.capacity:g} {r.unit}</option>' for r in compatible
+            )
             return f"""
 <div class="card"><h2>Planeamento</h2>
-<p>A demanda está validada. Escolha o recurso e a capacidade disponível.</p>
+<p>A demanda está validada. Escolha o recurso do catálogo e, se necessário, personalize as etapas.</p>
 <form method="post" action="/action">
 <input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="plan">
-<div class="grid">
-<div class="field"><label>Recurso</label><input name="resource" placeholder="Ex.: Camião 01" required></div>
-<div class="field"><label>Capacidade ({demand.unit.unit})</label><input name="capacity" type="number" min="0.01" step="0.01" required></div>
+<div class="field"><label>Recurso</label><select name="resource_id" required>{options}</select></div>
+<div class="field"><label>Etapas (separadas por vírgula)</label>
+<input name="stages" placeholder="Ex.: recolha, transporte, entrega — deixe em branco para o padrão">
 </div>
 <button>Confirmar planeamento</button></form></div>"""
 
@@ -282,6 +321,10 @@ class App(BaseHTTPRequestHandler):
 <form method="post" action="/action">
 <input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="event">
 <div class="field"><label>Evento ocorrido</label><input name="description" placeholder="Ex.: Saiu da origem às 10h" required></div>
+<div class="grid">
+<div class="field"><label>Localização (opcional)</label><input name="location" placeholder="Ex.: Viana, Luanda"></div>
+<div class="field"><label>Quantidade (opcional)</label><input name="quantity" type="number" step="0.01"></div>
+</div>
 <button>Registar evento</button></form>
 <hr>
 <form method="post" action="/action">
@@ -318,7 +361,10 @@ class App(BaseHTTPRequestHandler):
             items = "<li>Demanda criada e validada</li>"
         else:
             items = "".join(
-                f"<li>{event.timestamp:%H:%M:%S} — <b>{event.type}</b> — {event.description}</li>"
+                f"<li>{event.timestamp:%H:%M:%S} — <b>{event.type}</b> — {event.description}"
+                + (f" · {event.location}" if event.location else "")
+                + (f" · {event.quantity:g}" if event.quantity is not None else "")
+                + "</li>"
                 for event in operation.events
             )
         return f'<div class="card"><h2>Linha do tempo</h2><ol>{items}</ol></div>'
@@ -335,6 +381,10 @@ class App(BaseHTTPRequestHandler):
 
         if self.path == "/action":
             self.handle_action(value)
+            return
+
+        if self.path == "/resources":
+            self.handle_create_resource(value)
             return
 
         self.redirect("/")
@@ -374,6 +424,22 @@ class App(BaseHTTPRequestHandler):
         persist(demand_id)
         self.redirect(f"/operation?id={demand_id}")
 
+    def handle_create_resource(self, value) -> None:
+        try:
+            capacity = float(value("capacity"))
+        except ValueError:
+            capacity = 0
+        name = value("name")
+        if not name or capacity <= 0:
+            self.send_page("<h1>Validação falhou</h1><p>Indique nome e capacidade válidos.</p>", 400)
+            return
+
+        resource_id = f"R-{len(RESOURCE_CATALOG) + 1:03d}"
+        resource = Resource(resource_id, name, capacity, value("unit"))
+        RESOURCE_CATALOG[resource_id] = resource
+        storage.save_catalog_resource(resource)
+        self.redirect("/resources")
+
     def handle_action(self, value) -> None:
         demand_id = value("id")
         demand = DEMANDS.get(demand_id)
@@ -397,7 +463,9 @@ class App(BaseHTTPRequestHandler):
             elif action == "complete_stage":
                 self.find_stage(operation, value("stage_id")).complete()
             elif action == "event":
-                operation.register_event("event", value("description"))
+                quantity_raw = value("quantity")
+                quantity = float(quantity_raw) if quantity_raw else None
+                operation.register_event("event", value("description"), location=value("location") or None, quantity=quantity)
             elif action == "exception":
                 self.action_register_exception(operation, value)
             elif action == "replan":
@@ -414,13 +482,15 @@ class App(BaseHTTPRequestHandler):
         self.redirect(f"/operation?id={demand_id}")
 
     def action_plan(self, demand: Demand, demand_id: str, value) -> None:
-        try:
-            capacity = float(value("capacity"))
-        except ValueError:
-            capacity = 0
-        resource = Resource(f"R-{demand_id}", value("resource"), capacity, demand.unit.unit)
+        resource = RESOURCE_CATALOG.get(value("resource_id"))
+        if resource is None:
+            raise ValueError("Recurso não encontrado no catálogo")
+
+        stage_names_raw = value("stages")
+        stage_names = [s.strip() for s in stage_names_raw.split(",") if s.strip()] or None
+
         plan = create_plan(demand, resource, f"P-{demand_id}-v1")
-        operation = create_operation(demand, plan, f"O-{demand_id}")
+        operation = create_operation(demand, plan, f"O-{demand_id}", stage_names)
         RESOURCES[demand_id] = resource
         PLANS[demand_id] = plan
         OPERATIONS[demand_id] = operation
