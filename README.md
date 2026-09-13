@@ -34,6 +34,14 @@ Depois abrir `http://localhost:8000`.
 - Exceção regista tipo, gravidade e descrição reais introduzidos pelo operador (antes eram valores fixos).
 - GitHub Actions: PASS — validado adicionalmente com um teste de regressão que chama `create_replanned_plan` (a função real usada pelo `app.py`), não apenas a construção manual de um `Plan`.
 
+## Capacidade
+
+Capacidade é um objeto próprio (`Capacity`), com o ciclo `Disponível → Reservada → Utilizada →
+Liberada`. Reservada ao criar o plano, colocada em uso ao iniciar a operação, e liberada ao concluir
+(ou, no replaneamento, liberada do plano anterior e reservada/colocada em uso de imediato no novo).
+Antes, capacidade era apenas um atributo do Recurso — sem estado próprio. Ver `Capacity` em
+`nexxus_logistica.py`.
+
 ## Persistência
 
 O estado (demandas, recursos, planos, operações, medições) é guardado em `nexxus.db`, uma base de
@@ -43,7 +51,8 @@ cada ação. Reiniciar o processo já não apaga o trabalho em curso. Ver `stora
 
 ## Testes
 
-- `test_nexxus_logistica.py` — testes do domínio (dataclasses, máquina de estados, medição).
+- `test_nexxus_logistica.py` — testes do domínio (dataclasses, máquina de estados, medição, ciclo de
+  vida da Capacidade).
 - `test_app.py` — testes de integração: correm pedidos HTTP reais contra `app.py` (servidor iniciado
   num thread, numa porta livre), cobrindo o fluxo completo com exceção e replaneamento, e a persistência
   (dados recarregados diretamente da base de dados, simulando um reinício do processo). Este ficheiro
