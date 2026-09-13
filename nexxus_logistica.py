@@ -43,6 +43,13 @@ class ExceptionState(str, Enum):
     CLOSED = "closed"
 
 
+class CapacityState(str, Enum):
+    AVAILABLE = "available"
+    RESERVED = "reserved"
+    IN_USE = "in_use"
+    RELEASED = "released"
+
+
 @dataclass
 class LogisticsUnit:
     id: str
@@ -80,8 +87,33 @@ class Demand:
 
 
 @dataclass
+class Capacity:
+    id: str
+    resource_id: str
+    quantity: float
+    unit: str = "kg"
+    state: CapacityState = CapacityState.AVAILABLE
+
+    def reserve(self) -> None:
+        if self.state != CapacityState.AVAILABLE:
+            raise ValueError("Capacity must be available to be reserved")
+        self.state = CapacityState.RESERVED
+
+    def use(self) -> None:
+        if self.state != CapacityState.RESERVED:
+            raise ValueError("Capacity must be reserved before use")
+        self.state = CapacityState.IN_USE
+
+    def release(self) -> None:
+        if self.state != CapacityState.IN_USE:
+            raise ValueError("Capacity must be in use before releasing")
+        self.state = CapacityState.RELEASED
+
+
+@dataclass
 class Allocation:
     resource_id: str
+    capacity_id: str
     quantity: float
     state: str = "allocated"
     start: datetime | None = None
@@ -93,6 +125,7 @@ class Plan:
     id: str
     demand_id: str
     allocation: Allocation
+    capacity: Capacity
     version: int = 1
     state: str = "active"
     planned_start: datetime | None = None
@@ -256,11 +289,14 @@ def create_plan(
     if demand.state != DemandState.VALIDATED:
         raise ValueError("Demand must be validated before planning")
     _check_resource_for_demand(resource, demand)
+    capacity = Capacity(f"CAP-{plan_id}", resource.id, demand.unit.quantity, resource.unit)
+    capacity.reserve()
     demand.state = DemandState.PLANNED
     return Plan(
         id=plan_id,
         demand_id=demand.id,
-        allocation=Allocation(resource.id, demand.unit.quantity),
+        allocation=Allocation(resource.id, capacity.id, demand.unit.quantity),
+        capacity=capacity,
         version=version,
         planned_start=planned_start,
         planned_end=planned_end,
@@ -282,18 +318,42 @@ def create_replanned_plan(
     PLANNED ou IN_EXECUTION. Esta era a causa do bug em que qualquer
     tentativa de replaneamento a partir do app.py rebentava com
     "Demand must be validated before planning".
+
+    A capacidade do plano anterior é liberada e uma nova capacidade é
+    reservada e colocada imediatamente em uso, porque o replaneamento
+    retoma a execução de imediato (não volta a ficar apenas "planeada").
     """
     if previous_plan.demand_id != demand.id:
         raise ValueError("Previous plan does not belong to demand")
     _check_resource_for_demand(resource, demand)
+    if previous_plan.capacity.state == CapacityState.IN_USE:
+        previous_plan.capacity.release()
+
+    new_capacity = Capacity(f"CAP-{plan_id}", resource.id, demand.unit.quantity, resource.unit)
+    new_capacity.reserve()
+    new_capacity.use()
+
     return Plan(
         id=plan_id,
         demand_id=demand.id,
-        allocation=Allocation(resource.id, demand.unit.quantity),
+        allocation=Allocation(resource.id, new_capacity.id, demand.unit.quantity),
+        capacity=new_capacity,
         version=previous_plan.version + 1,
         planned_start=planned_start,
         planned_end=planned_end,
     )
+
+
+def start_operation(operation: Operation, plan: Plan) -> None:
+    """Inicia a operação e coloca a capacidade reservada em uso."""
+    operation.start()
+    plan.capacity.use()
+
+
+def complete_operation(operation: Operation, plan: Plan, result: str, evidence: str) -> None:
+    """Conclui a operação e liberta a capacidade que estava em uso."""
+    operation.complete(result, evidence)
+    plan.capacity.release()
 
 
 def create_operation(demand: Demand, plan: Plan, operation_id: str) -> Operation:
@@ -340,7 +400,7 @@ def run_demo() -> dict:
     plan = create_plan(demand, resource, "P-001", planned_start=datetime.now())
     operation = create_operation(demand, plan, "O-001")
     operation.prepare()
-    operation.start()
+    start_operation(operation, plan)
     demand.state = DemandState.IN_EXECUTION
 
     operation.stages[0].start()
@@ -370,7 +430,7 @@ def run_demo() -> dict:
         stage.complete()
 
     operation.register_event("arrival", "Chegada ao destino B", operation.stages[2].id)
-    operation.complete("20 000 kg entregues", "POD-001")
+    complete_operation(operation, replanned, "20 000 kg entregues", "POD-001")
     demand.state = DemandState.COMPLETED
 
     measurement = measure_operation(20_000, 20_000, 8, 9.5)
