@@ -1,15 +1,25 @@
 # Projecto Nexxus
 
-Primeira implementação funcional do projecto Nexxus.
+Primeira versão utilizável do NEXXUS Logística sobre o Core Comum + Core Logística.
 
-## Estrutura inicial
+## Estrutura
 
 - Core Comum
 - Core Logística
 - Nexxus Logística
 
-## Primeiro fluxo funcional
+## Fluxo utilizável
 
-Demanda → Unidade → Pontos → Capacidade → Planeamento → Alocação → Operação → Execução
+**Criar operação → validar → planear → iniciar execução → registar eventos → registar exceção → replanear → concluir → consultar resultado/evidência.**
 
-As extensões de Exceção/Replaneamento, Resultado/Evidência e Medição serão construídas sobre este fluxo.
+## Protótipo
+
+A aplicação web está em `app.py` e corre com Python standard library:
+
+```bash
+python app.py
+```
+
+Depois abrir `http://localhost:8000`.
+
+O protótipo mantém o foco na execução da operação, sem introduzir infraestrutura ou arquitetura desnecessária nesta fase.
