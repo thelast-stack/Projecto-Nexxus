@@ -34,13 +34,21 @@ Depois abrir `http://localhost:8000`.
 - Exceção regista tipo, gravidade e descrição reais introduzidos pelo operador (antes eram valores fixos).
 - GitHub Actions: PASS — validado adicionalmente com um teste de regressão que chama `create_replanned_plan` (a função real usada pelo `app.py`), não apenas a construção manual de um `Plan`.
 
+## Persistência
+
+O estado (demandas, recursos, planos, operações, medições) é guardado em `nexxus.db`, uma base de
+dados SQLite local (biblioteca padrão do Python — nenhuma dependência ou infraestrutura nova). Cada
+agregado é gravado como JSON numa tabela própria, carregado ao arrancar o servidor e atualizado a
+cada ação. Reiniciar o processo já não apaga o trabalho em curso. Ver `storage.py`.
+
 ## Testes
 
 - `test_nexxus_logistica.py` — testes do domínio (dataclasses, máquina de estados, medição).
 - `test_app.py` — testes de integração: correm pedidos HTTP reais contra `app.py` (servidor iniciado
-  num thread, numa porta livre), cobrindo o fluxo completo com exceção e replaneamento. Este ficheiro
+  num thread, numa porta livre), cobrindo o fluxo completo com exceção e replaneamento, e a persistência
+  (dados recarregados diretamente da base de dados, simulando um reinício do processo). Este ficheiro
   existe porque o bug do replaneamento só era visível a correr o fluxo HTTP real — os testes de
-  domínio isolados não o detectavam.
+  domínio isolados não o detectavam. Usa um ficheiro SQLite temporário, isolado da base de dados real.
 
 ```bash
 python -m pytest -v
