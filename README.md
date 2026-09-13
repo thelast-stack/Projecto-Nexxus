@@ -34,8 +34,24 @@ Depois abrir `http://localhost:8000`.
 - Exceção regista tipo, gravidade e descrição reais introduzidos pelo operador (antes eram valores fixos).
 - GitHub Actions: PASS — validado adicionalmente com um teste de regressão que chama `create_replanned_plan` (a função real usada pelo `app.py`), não apenas a construção manual de um `Plan`.
 
+## Testes
+
+- `test_nexxus_logistica.py` — testes do domínio (dataclasses, máquina de estados, medição).
+- `test_app.py` — testes de integração: correm pedidos HTTP reais contra `app.py` (servidor iniciado
+  num thread, numa porta livre), cobrindo o fluxo completo com exceção e replaneamento. Este ficheiro
+  existe porque o bug do replaneamento só era visível a correr o fluxo HTTP real — os testes de
+  domínio isolados não o detectavam.
+
+```bash
+python -m pytest -v
+```
+
 ## Correção — replaneamento
 
 Foi identificado e corrigido um bug em que `create_replanned_plan` chamava `create_plan`, que por sua vez exigia `demand.state == VALIDATED`. Como o primeiro `create_plan` já tinha avançado a demanda para `PLANNED`, qualquer replaneamento subsequente rebentava com `ValueError: Demand must be validated before planning`. Isto tornava o passo de replaneamento inutilizável na aplicação web, apesar de os testes anteriores passarem — porque construíam o `Plan` replaneado manualmente em vez de chamar a função usada pelo `app.py`. `create_replanned_plan` tem agora validação própria, independente do estado da demanda, e o teste `test_replanning_does_not_require_demand_to_be_revalidated` cobre esta regressão.
+
+Foi também corrigido um caso limite descoberto ao escrever os testes de integração: chamar `replan`
+sem existir nenhuma exceção pendente rebentava com `IndexError` não tratado (500). Agora é validado
+explicitamente e devolve um erro tratado (400).
 
 O protótipo mantém o foco na execução real do fluxo, sem introduzir infraestrutura ou arquitetura desnecessária nesta fase.
