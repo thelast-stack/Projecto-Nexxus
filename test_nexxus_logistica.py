@@ -1,4 +1,5 @@
 from nexxus_logistica import (
+    CapacityState,
     Demand,
     DemandState,
     ExceptionState,
@@ -8,10 +9,12 @@ from nexxus_logistica import (
     Point,
     Resource,
     StageState,
+    complete_operation,
     create_operation,
     create_plan,
     create_replanned_plan,
     measure_operation,
+    start_operation,
     validate_demand,
 )
 
@@ -36,11 +39,13 @@ def test_end_to_end_flow_with_stages_exception_and_replanning():
     operation = create_operation(demand, plan, "O-001")
 
     assert operation.state == OperationState.PLANNED
+    assert plan.capacity.state == CapacityState.RESERVED
     operation.prepare()
     assert operation.state == OperationState.PREPARED
     assert all(stage.state == StageState.PREPARED for stage in operation.stages)
 
-    operation.start()
+    start_operation(operation, plan)
+    assert plan.capacity.state == CapacityState.IN_USE
     operation.stages[0].start()
     operation.stages[0].complete()
     event = operation.register_event("departure", "Saída", operation.stages[1].id)
@@ -64,6 +69,8 @@ def test_end_to_end_flow_with_stages_exception_and_replanning():
     # app.py usa (create_replanned_plan), não construindo o Plan manualmente.
     replanned = create_replanned_plan(demand, resource, "P-002", plan)
     assert replanned.version == 2
+    assert plan.capacity.state == CapacityState.RELEASED
+    assert replanned.capacity.state == CapacityState.IN_USE
 
     operation.replan(replanned)
     exception.close()
@@ -72,13 +79,14 @@ def test_end_to_end_flow_with_stages_exception_and_replanning():
         stage.start()
         stage.complete()
 
-    operation.complete("20 t entregues", "POD-001")
+    complete_operation(operation, replanned, "20 t entregues", "POD-001")
     demand.state = DemandState.COMPLETED
 
     assert operation.state == OperationState.COMPLETED
     assert all(stage.state == StageState.COMPLETED for stage in operation.stages)
     assert operation.result == "20 t entregues"
     assert operation.evidence == "POD-001"
+    assert replanned.capacity.state == CapacityState.RELEASED
 
 
 def test_replanning_does_not_require_demand_to_be_revalidated():
@@ -121,6 +129,28 @@ def test_operation_cannot_start_before_prepared():
         assert False, "Expected operation to require PREPARED state"
     except ValueError:
         pass
+
+
+def test_capacity_lifecycle_reserved_in_use_released():
+    demand = make_demand()
+    resource = Resource("R-001", "Veículo 01", 25_000)
+    validate_demand(demand)
+
+    plan = create_plan(demand, resource, "P-001")
+    assert plan.capacity.state == CapacityState.RESERVED
+    assert plan.allocation.capacity_id == plan.capacity.id
+
+    operation = create_operation(demand, plan, "O-001")
+    operation.prepare()
+    start_operation(operation, plan)
+    assert plan.capacity.state == CapacityState.IN_USE
+
+    for stage in operation.stages:
+        stage.start()
+        stage.complete()
+
+    complete_operation(operation, plan, "entregue", "POD-001")
+    assert plan.capacity.state == CapacityState.RELEASED
 
 
 def test_measurement_calculates_deviation():
