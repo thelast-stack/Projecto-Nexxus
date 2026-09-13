@@ -75,6 +75,20 @@ def _load_all(table: str) -> dict:
     return {key: json.loads(data) for key, data in rows}
 
 
+def _load_typed(table: str, decoder) -> dict:
+    """Carrega uma tabela aplicando `decoder` a cada linha, ignorando registos
+    que já não correspondem ao formato atual (ex.: gravados por uma versão
+    anterior do modelo, antes de um campo novo ter sido acrescentado) em vez
+    de rebentar o arranque de toda a aplicação por causa de uma linha antiga."""
+    result = {}
+    for key, raw in _load_all(table).items():
+        try:
+            result[key] = decoder(raw)
+        except (KeyError, ValueError, TypeError) as exc:
+            print(f"[storage] a ignorar registo incompatível em '{table}' (key={key}): {exc}")
+    return result
+
+
 def _parse_dt(value):
     return datetime.fromisoformat(value) if value else None
 
@@ -202,19 +216,19 @@ def _operation_from_dict(d: dict) -> Operation:
 
 
 def load_demands() -> dict:
-    return {key: _demand_from_dict(value) for key, value in _load_all("demands").items()}
+    return _load_typed("demands", _demand_from_dict)
 
 
 def load_resources() -> dict:
-    return {key: Resource(**value) for key, value in _load_all("resources").items()}
+    return _load_typed("resources", lambda value: Resource(**value))
 
 
 def load_plans() -> dict:
-    return {key: _plan_from_dict(value) for key, value in _load_all("plans").items()}
+    return _load_typed("plans", _plan_from_dict)
 
 
 def load_operations() -> dict:
-    return {key: _operation_from_dict(value) for key, value in _load_all("operations").items()}
+    return _load_typed("operations", _operation_from_dict)
 
 
 def load_measurements() -> dict:
