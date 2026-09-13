@@ -1,4 +1,4 @@
-from nexus_logistica import (
+from nexxus_logistica import (
     Demand,
     DemandState,
     LogisticsUnit,
