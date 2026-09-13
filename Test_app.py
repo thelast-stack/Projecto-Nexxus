@@ -7,6 +7,8 @@ domínio isolados. test_nexxus_logistica.py cobre os objetos; este ficheiro
 cobre a camada web que os liga entre si.
 """
 
+import os
+import tempfile
 import threading
 import unittest
 import urllib.error
@@ -14,9 +16,16 @@ import urllib.parse
 import urllib.request
 from http.server import HTTPServer
 
-import app as app_module
-from app import App
-from nexxus_logistica import OperationState
+# Isolar os testes: usar um ficheiro SQLite temporário, nunca a base de
+# dados real do protótipo. Tem de ser definido ANTES de importar app/storage,
+# porque storage.DB_PATH resolve o valor por omissão no momento da importação.
+_TEST_DB = tempfile.NamedTemporaryFile(prefix="nexxus_test_", suffix=".db", delete=False)
+_TEST_DB.close()
+os.environ["NEXXUS_DB_PATH"] = _TEST_DB.name
+
+import app as app_module  # noqa: E402
+from app import App  # noqa: E402
+from nexxus_logistica import OperationState  # noqa: E402
 
 
 class NexxusAppIntegrationTests(unittest.TestCase):
@@ -32,6 +41,11 @@ class NexxusAppIntegrationTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(_TEST_DB.name + suffix)
+            except FileNotFoundError:
+                pass
 
     def setUp(self):
         # app.py guarda o estado em dicionários ao nível do módulo;
@@ -156,6 +170,31 @@ class NexxusAppIntegrationTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.post("/action", {"id": demand_id, "action": "replan", "description": "x"})
         self.assertEqual(ctx.exception.code, 400)
+
+    # ------------------------------------------------------- persistência
+
+    def test_data_survives_simulated_restart(self):
+        """Confirma que a persistência funciona: reconstrói o estado a
+        partir da base de dados (não da memória), tal como aconteceria
+        depois de reiniciar o processo do servidor."""
+        import storage
+
+        demand_id = self.create_demand()
+        self.plan_prepare_start(demand_id)
+        self.post("/action", {"id": demand_id, "action": "start_stage", "stage_id": f"O-{demand_id}-S1"})
+        self.post("/action", {"id": demand_id, "action": "complete_stage", "stage_id": f"O-{demand_id}-S1"})
+
+        reloaded_demands = storage.load_demands()
+        reloaded_operations = storage.load_operations()
+
+        self.assertIn(demand_id, reloaded_demands)
+        self.assertEqual(reloaded_demands[demand_id].client, "Cliente ABC")
+        self.assertEqual(reloaded_demands[demand_id].state.value, "in_execution")
+
+        self.assertIn(demand_id, reloaded_operations)
+        reloaded_operation = reloaded_operations[demand_id]
+        self.assertEqual(reloaded_operation.stages[0].state.value, "completed")
+        self.assertEqual(reloaded_operation.stages[1].state.value, "prepared")
 
 
 if __name__ == "__main__":
