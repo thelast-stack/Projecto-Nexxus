@@ -1,0 +1,1582 @@
+diff --git a/PROGRESS.md b/PROGRESS.md
+index 3ffb9be..47ae267 100644
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -13,17 +13,34 @@
+ - **Etapas dinâmicas**: nomes de etapas definidos pelo operador no planeamento (com padrão de 3 se
+   deixado em branco).
+ - **Eventos com localização e quantidade**, visíveis na linha do tempo da operação.
+-- Suite de testes total: 16 (6 domínio + 10 integração/persistência/catálogo/etapas/eventos).
++- **Cardinalidade Demanda ↔ Operação corrigida.** O modelo assumia implicitamente 1 Demanda : 1
++  Plano : 1 Operação, o que não cobria divisão (uma demanda grande servida por várias operações) nem
++  consolidação (várias demandas transportadas juntas numa operação). `Plan` e `Operation` passam a
++  referenciar uma lista de `DemandAllocation` (demanda + quantidade); `Demand` ganhou
++  `allocated_quantity`/`delivered_quantity` para saber quanto já foi planeado e quanto já foi
++  entregue. `PLANS`/`OPERATIONS` deixaram de ser indexados por `demand_id` (o que impunha 1:1 na
++  própria estrutura) e passaram a ser indexados pela sua própria id. Novas rotas web: `/plan-demand`
++  (planear total ou parcialmente uma demanda) e `/consolidate` (agrupar várias demandas numa
++  operação).
++- Removido `Test_app.py`, duplicado obsoleto de `test_app.py` que só diferia na capitalização
++  (frágil em checkouts case-insensitive; sem as funcionalidades de catálogo).
++- Suite de testes total: 24 (11 domínio + 13 integração — incluindo os dois cenários de
++  cardinalidade, ponta a ponta, via HTTP real).
++- Todos os três cenários (fluxo original com replaneamento, divisão, consolidação) validados
++  manualmente com `curl` do planeamento até `completed`, sem erros inesperados.
+ - Documentação (README, PROGRESS, Notion — secções 12 a 15) sincronizada com o estado real e
+   validado do código.
+ 
+ ## Estado face ao MVP definido no Notion
+ Os 13 objetos mínimos (secção 3.1), os 6 blocos funcionais (secção 4), o cenário de validação de
+ 15 passos (secção 7) e as 11 perguntas de critério de funcionalidade (secção 8) estão cobertos e
+-validados por HTTP real. Sem lacunas conhecidas face ao MVP documentado.
++validados por HTTP real. A auditoria do Core Logística como Nível 2 (Teste de Cobertura) identificou
++a lacuna de cardinalidade Demanda↔Operação, já corrigida e validada nesta versão. Sem lacunas
++conhecidas adicionais face ao MVP documentado.
+ 
+ ## Próximo objetivo
+-Fase de MVP considerada concluída. Simplificações conscientes que permanecem, fora do MVP mínimo
+-(secção 11.2 do Notion): Resultado/Evidência e Medição como campos simples, sem reserva concorrente
+-de recursos entre operações simultâneas, sem autenticação. Próximas prioridades ficam em aberto —
+-por exemplo, autenticação básica ou consulta de histórico de operações concluídas.
++Simplificações conscientes que permanecem, fora do MVP mínimo (secção 11.2 do Notion):
++Resultado/Evidência e Medição como campos simples, sem reserva concorrente de recursos entre
++operações simultâneas, sem autenticação. Próximas prioridades ficam em aberto — por exemplo,
++autenticação básica, consulta de histórico de operações concluídas, ou revisitar a distinção entre
++"Informação" e "Histórico" mencionada como ponto em aberto na secção 6 do Notion.
+diff --git a/README.md b/README.md
+index 68ed5e4..1f5279b 100644
+--- a/README.md
++++ b/README.md
+@@ -12,6 +12,10 @@ Primeira versão utilizável do NEXXUS Logística sobre o Core Comum + Core Log
+ 
+ **Demanda → Planeamento → Preparação → Execução → Exceção/Replaneamento → Resultado/Evidência → Medição.**
+ 
++Uma demanda pode ser **dividida** por várias operações (quando excede a capacidade de um único
++recurso), e uma operação pode **consolidar** várias demandas de clientes diferentes numa só viagem.
++Ver secção "Cardinalidade Demanda ↔ Operação" abaixo.
++
+ ## Protótipo
+ 
+ A aplicação web está em `app.py` e usa `nexxus_logistica.py` como fonte de verdade do domínio.
+@@ -34,6 +38,41 @@ Depois abrir `http://localhost:8000`.
+ - Exceção regista tipo, gravidade e descrição reais introduzidos pelo operador (antes eram valores fixos).
+ - GitHub Actions: PASS — validado adicionalmente com um teste de regressão que chama `create_replanned_plan` (a função real usada pelo `app.py`), não apenas a construção manual de um `Plan`.
+ 
++## Cardinalidade Demanda ↔ Operação (divisão e consolidação)
++
++A auditoria do Core Logística como Nível 2 identificou que o modelo assumia implicitamente
++**1 Demanda : 1 Plano : 1 Operação : 1 Recurso**, o que não cobre dois casos comuns em logística
++real:
++
++- **Divisão** — uma demanda grande (ex.: 30t) excede a capacidade de um único recurso e precisa de
++  duas ou mais operações (dois veículos, duas viagens).
++- **Consolidação** — várias demandas de clientes diferentes são transportadas juntas numa única
++  operação (um camião, uma rota, várias entregas).
++
++A correção introduziu `DemandAllocation` (demand_id + quantidade) como uma **lista** em `Plan` e em
++`Operation`, em vez de um único `demand_id`. Cada `Demand` passa a controlar quanto da sua
++quantidade total já foi alocada a algum plano (`allocated_quantity` / `remaining_quantity`) e quanto
++já foi efetivamente entregue (`delivered_quantity` / `fully_delivered`). Isto permite:
++
++- planear apenas uma parte de uma demanda (`create_plan(demand, resource, plan_id, quantities={...})`),
++  deixando o resto disponível para uma operação futura;
++- planear várias demandas juntas (`create_plan([d1, d2, d3], resource, plan_id)`), desde que
++  partilhem a mesma unidade de medida e o recurso tenha capacidade para a soma;
++- uma demanda só passa a `completed` quando **toda** a sua quantidade tiver sido entregue — o que
++  pode exigir mais do que uma operação concluída.
++
++Na aplicação web, isto aparece como duas rotas novas:
++
++- `/plan-demand` — planear (total ou parcialmente) uma demanda, a partir da sua própria página
++  (`/demand?id=...`);
++- `/consolidate` — selecionar duas ou mais demandas com quantidade por planear e criar uma operação
++  conjunta.
++
++`PLANS` e `OPERATIONS` deixaram de ser indexados por `demand_id` (o que impunha 1:1 na própria
++estrutura de dados) e passaram a ser indexados pela sua própria id (`plan_id` / `operation_id`); a
++página de uma demanda lista todas as operações que a cobrem, e a página de uma operação lista todas
++as demandas que ela transporta.
++
+ ## Catálogo de recursos, etapas dinâmicas e eventos com localização/quantidade
+ 
+ - **Catálogo de recursos** (`/resources`): recursos são adicionados uma vez e reutilizados em vários
+@@ -60,24 +99,45 @@ cada ação. Reiniciar o processo já não apaga o trabalho em curso. Ver `stora
+ 
+ ## Testes
+ 
+-- `test_nexxus_logistica.py` — testes do domínio (dataclasses, máquina de estados, medição, ciclo de
+-  vida da Capacidade).
+-- `test_app.py` — testes de integração: correm pedidos HTTP reais contra `app.py` (servidor iniciado
+-  num thread, numa porta livre), cobrindo o fluxo completo com exceção e replaneamento, e a persistência
+-  (dados recarregados diretamente da base de dados, simulando um reinício do processo). Este ficheiro
+-  existe porque o bug do replaneamento só era visível a correr o fluxo HTTP real — os testes de
+-  domínio isolados não o detectavam. Usa um ficheiro SQLite temporário, isolado da base de dados real.
++- `test_nexxus_logistica.py` — testes do domínio: 11 testes (fluxo original com exceção e
++  replaneamento, ciclo de vida da Capacidade, medição, **divisão de uma demanda por duas operações**,
++  **consolidação de três demandas numa operação**, e as validações de erro de cada caso).
++- `test_app.py` — testes de integração: 13 testes que correm pedidos HTTP reais contra `app.py`
++  (servidor iniciado num thread, numa porta livre), cobrindo o fluxo completo com exceção e
++  replaneamento, persistência (dados recarregados diretamente da base de dados, simulando um
++  reinício do processo), catálogo de recursos, etapas/eventos personalizados, e **os dois cenários de
++  cardinalidade (divisão e consolidação) via HTTP real, do planeamento até `completed`**. Usa um
++  ficheiro SQLite temporário, isolado da base de dados real.
++
++Total: 24 testes.
+ 
+ ```bash
+ python -m pytest -v
+ ```
+ 
+-## Correção — replaneamento
++## Correções aplicadas
++
++**Cardinalidade Demanda ↔ Operação (divisão e consolidação).** Ver secção dedicada acima. Identificado
++numa auditoria do Core Logística como Nível 2, validado com dois testes de domínio, dois testes de
++integração HTTP, e execução manual com `curl` do planeamento até `completed` em ambos os cenários.
+ 
+-Foi identificado e corrigido um bug em que `create_replanned_plan` chamava `create_plan`, que por sua vez exigia `demand.state == VALIDATED`. Como o primeiro `create_plan` já tinha avançado a demanda para `PLANNED`, qualquer replaneamento subsequente rebentava com `ValueError: Demand must be validated before planning`. Isto tornava o passo de replaneamento inutilizável na aplicação web, apesar de os testes anteriores passarem — porque construíam o `Plan` replaneado manualmente em vez de chamar a função usada pelo `app.py`. `create_replanned_plan` tem agora validação própria, independente do estado da demanda, e o teste `test_replanning_does_not_require_demand_to_be_revalidated` cobre esta regressão.
++**Replaneamento.** Foi identificado e corrigido um bug em que `create_replanned_plan` chamava
++`create_plan`, que por sua vez exigia `demand.state == VALIDATED`. Como o primeiro `create_plan` já
++tinha avançado a demanda para `PLANNED`, qualquer replaneamento subsequente rebentava com
++`ValueError: Demand must be validated before planning`. Isto tornava o passo de replaneamento
++inutilizável na aplicação web, apesar de os testes anteriores passarem — porque construíam o `Plan`
++replaneado manualmente em vez de chamar a função usada pelo `app.py`. `create_replanned_plan` tem
++agora validação própria, independente do estado da demanda, e o teste
++`test_replanning_does_not_require_demand_to_be_revalidated` cobre esta regressão.
+ 
+ Foi também corrigido um caso limite descoberto ao escrever os testes de integração: chamar `replan`
+ sem existir nenhuma exceção pendente rebentava com `IndexError` não tratado (500). Agora é validado
+ explicitamente e devolve um erro tratado (400).
+ 
+-O protótipo mantém o foco na execução real do fluxo, sem introduzir infraestrutura ou arquitetura desnecessária nesta fase.
++**Limpeza:** removido `Test_app.py` (duplicado de `test_app.py` diferindo apenas na maiúscula
++inicial, mais antigo e sem as funcionalidades de catálogo de recursos). Manter dois ficheiros que só
++diferem na capitalização é frágil em checkouts de Windows/macOS (sistemas de ficheiros
++case-insensitive) e não tem função aqui — apenas o `test_app.py` (minúsculas) é mantido.
++
++O protótipo mantém o foco na execução real do fluxo, sem introduzir infraestrutura ou arquitetura
++desnecessária nesta fase.
+diff --git a/app.py b/app.py
+index 142ec2c..9bee129 100644
+--- a/app.py
++++ b/app.py
+@@ -23,7 +23,6 @@ from nexxus_logistica import (
+ )
+ 
+ DEMANDS = {}
+-RESOURCES = {}
+ RESOURCE_CATALOG = {}
+ PLANS = {}
+ OPERATIONS = {}
+@@ -31,7 +30,6 @@ MEASUREMENTS = {}
+ 
+ storage.init_db()
+ DEMANDS.update(storage.load_demands())
+-RESOURCES.update(storage.load_resources())
+ RESOURCE_CATALOG.update(storage.load_catalog_resources())
+ PLANS.update(storage.load_plans())
+ OPERATIONS.update(storage.load_operations())
+@@ -55,6 +53,9 @@ a.secondary{background:#e9ebee;color:#20242a}
+ .flow{display:flex;gap:8px;flex-wrap:wrap}
+ .step{padding:8px 11px;background:#eef0f2;border-radius:7px}
+ .step.active{background:#20242a;color:#fff}
++.checkrow{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #eef0f2}
++.checkrow input[type=checkbox]{width:auto}
++.checkrow .qty{width:110px}
+ @media(max-width:700px){.grid{grid-template-columns:1fr}}
+ """
+ 
+@@ -74,17 +75,35 @@ def field_value(form_data: dict, key: str) -> str:
+     return form_data.get(key, [""])[0].strip()
+ 
+ 
+-def persist(demand_id: str) -> None:
++def field_values(form_data: dict, key: str) -> list:
++    return [v.strip() for v in form_data.get(key, []) if v.strip()]
++
++
++def persist_demand(demand_id: str) -> None:
+     if demand_id in DEMANDS:
+         storage.save_demand(DEMANDS[demand_id])
+-    if demand_id in RESOURCES:
+-        storage.save_resource(demand_id, RESOURCES[demand_id])
+-    if demand_id in PLANS:
+-        storage.save_plan(demand_id, PLANS[demand_id])
+-    if demand_id in OPERATIONS:
+-        storage.save_operation(demand_id, OPERATIONS[demand_id])
+-    if demand_id in MEASUREMENTS:
+-        storage.save_measurement(demand_id, MEASUREMENTS[demand_id])
++
++
++def persist_operation(operation, plan) -> None:
++    """Grava a operação, o plano que a suporta e todas as demandas que ela
++    cobre (podem ser mais do que uma, no caso de consolidação)."""
++    storage.save_plan(plan)
++    storage.save_operation(operation)
++    for allocation in operation.allocations:
++        persist_demand(allocation.demand_id)
++    if operation.id in MEASUREMENTS:
++        storage.save_measurement(operation.id, MEASUREMENTS[operation.id])
++
++
++def operations_for_demand(demand_id: str) -> list:
++    return sorted(
++        (op for op in OPERATIONS.values() if demand_id in op.demand_ids),
++        key=lambda op: op.id,
++    )
++
++
++def next_id(prefix: str, existing: dict) -> str:
++    return f"{prefix}-{len(existing) + 1:03d}"
+ 
+ 
+ class App(BaseHTTPRequestHandler):
+@@ -109,23 +128,25 @@ class App(BaseHTTPRequestHandler):
+ 
+     def do_GET(self) -> None:
+         parsed = urlparse(self.path)
++        query = parse_qs(parsed.query)
+ 
+         if parsed.path == "/":
+             self.render_home()
+             return
+-
+         if parsed.path == "/new":
+             self.render_new_demand_form()
+             return
+-
+         if parsed.path == "/resources":
+             self.render_resources()
+             return
+-
++        if parsed.path == "/demand":
++            self.render_demand(field_value(query, "id"))
++            return
+         if parsed.path == "/operation":
+-            query = parse_qs(parsed.query)
+-            demand_id = field_value(query, "id")
+-            self.render_operation(demand_id)
++            self.render_operation(field_value(query, "id"))
++            return
++        if parsed.path == "/consolidate":
++            self.render_consolidate()
+             return
+ 
+         self.send_page("<h1>404</h1>", 404)
+@@ -135,15 +156,20 @@ class App(BaseHTTPRequestHandler):
+             f'<div class="card"><h3>Demanda #{demand.id}</h3>'
+             f'<p>{demand.client} · {demand.description} · {demand.unit.quantity:g} {demand.unit.unit} · '
+             f'{demand.origin.name} → {demand.destination.name}</p>'
++            f'<p class="muted">Alocado: {demand.allocated_quantity:g} · Entregue: {demand.delivered_quantity:g} · '
++            f'Restante: {demand.remaining_quantity:g} {demand.unit.unit}</p>'
+             f'<p class="status">Estado: {demand.state.value}</p>'
+-            f'<a class="button" href="/operation?id={demand.id}">Abrir</a></div>'
++            f'<a class="button" href="/demand?id={demand.id}">Abrir</a></div>'
+             for demand in DEMANDS.values()
+         )
+         self.send_page(
+             "<h1>NEXXUS LOGÍSTICA</h1>"
+             '<p class="muted">Demanda → Planeamento → Preparação → Execução → '
+-            "Exceção/Replaneamento → Resultado/Medição.</p>"
+-            '<p><a class="button" href="/new">+ Nova demanda</a> <a class="button secondary" href="/resources">Recursos</a></p>'
++            "Exceção/Replaneamento → Resultado/Medição. Uma demanda pode ser dividida por "
++            "várias operações; uma operação pode consolidar várias demandas.</p>"
++            '<p><a class="button" href="/new">+ Nova demanda</a> '
++            '<a class="button secondary" href="/resources">Recursos</a> '
++            '<a class="button secondary" href="/consolidate">Consolidar demandas</a></p>'
+             + (cards or '<div class="card">Nenhuma demanda registada.</div>')
+         )
+ 
+@@ -204,79 +230,168 @@ class App(BaseHTTPRequestHandler):
+ <button>Adicionar ao catálogo</button></form></div>
+ <a class="button secondary" href="/">Voltar</a>""")
+ 
+-    def render_operation(self, demand_id: str) -> None:
++    # ------------------------------------------------------- demanda (nível 1)
++
++    def render_demand(self, demand_id: str) -> None:
+         demand = DEMANDS.get(demand_id)
+         if not demand:
+             self.send_page("<h1>Demanda não encontrada</h1>", 404)
+             return
+ 
+-        operation = OPERATIONS.get(demand_id)
+-        current_state = operation.state if operation else demand.state
+-
+-        request_card = f"""
++        info_card = f"""
+ <div class="card"><h2>Pedido</h2>
+ <p><b>Solicitante:</b> {demand.client}</p>
+-<p><b>O que:</b> {demand.description} · <b>Quantidade:</b> {demand.unit.quantity:g} {demand.unit.unit}</p>
++<p><b>O que:</b> {demand.description} · <b>Quantidade total:</b> {demand.unit.quantity:g} {demand.unit.unit}</p>
+ <p><b>Origem:</b> {demand.origin.name} → <b>Destino:</b> {demand.destination.name}</p>
+ <p><b>Prazo:</b> {demand.deadline or "Não definido"}</p>
+ <p><b>Condições:</b> {", ".join(demand.conditions) or "Nenhuma"}</p>
+ <p><b>Observações:</b> {demand.notes or "Nenhuma"}</p>
++<p><b>Alocado:</b> {demand.allocated_quantity:g} · <b>Entregue:</b> {demand.delivered_quantity:g} ·
++<b>Restante:</b> {demand.remaining_quantity:g} {demand.unit.unit}</p>
+ <p class="status">Estado da demanda: {demand.state.value}</p></div>"""
+ 
+-        action_card = self.render_action_card(demand, operation, current_state)
+-        stages_card = self.render_stages_card(operation)
+-        timeline_card = self.render_timeline_card(operation)
++        linked = operations_for_demand(demand_id)
++        if linked:
++            rows = "".join(
++                f'<li>Operação <a href="/operation?id={op.id}">#{op.id}</a> — '
++                f'{next(a.quantity for a in op.allocations if a.demand_id == demand_id):g} {demand.unit.unit} · '
++                f'<b>{op.state.value}</b>'
++                + (f" · consolidada com {len(op.demand_ids) - 1} outra(s) demanda(s)" if len(op.demand_ids) > 1 else "")
++                + "</li>"
++                for op in linked
++            )
++            operations_card = f'<div class="card"><h2>Operações</h2><ul>{rows}</ul></div>'
++        else:
++            operations_card = '<div class="card"><p class="muted">Ainda sem nenhuma operação planeada.</p></div>'
++
++        plan_card = ""
++        if demand.remaining_quantity > 1e-9:
++            compatible = [r for r in RESOURCE_CATALOG.values() if r.unit == demand.unit.unit and r.available]
++            if not compatible:
++                plan_card = f"""
++<div class="card warn"><h2>Planear quantidade restante</h2>
++<p>Restam {demand.remaining_quantity:g} {demand.unit.unit} por planear, mas não há recursos no
++catálogo compatíveis com "{demand.unit.unit}".</p>
++<a class="button" href="/resources">Adicionar recurso</a></div>"""
++            else:
++                options = "".join(
++                    f'<option value="{r.id}">{r.name} — {r.capacity:g} {r.unit}</option>' for r in compatible
++                )
++                plan_card = f"""
++<div class="card"><h2>Planear quantidade restante</h2>
++<p>Restam <b>{demand.remaining_quantity:g} {demand.unit.unit}</b> por planear. Pode planear tudo de uma vez
++ou apenas uma parte (o resto fica disponível para uma operação futura — divisão da demanda).</p>
++<form method="post" action="/plan-demand">
++<input type="hidden" name="demand_id" value="{demand.id}">
++<div class="grid">
++<div class="field"><label>Recurso</label><select name="resource_id" required>{options}</select></div>
++<div class="field"><label>Quantidade a planear agora</label>
++<input name="quantity" type="number" min="0.01" step="0.01" max="{demand.remaining_quantity:g}"
++value="{demand.remaining_quantity:g}" required></div>
++</div>
++<div class="field"><label>Etapas (separadas por vírgula)</label>
++<input name="stages" placeholder="Ex.: recolha, transporte, entrega — deixe em branco para o padrão"></div>
++<button>Confirmar planeamento</button></form></div>"""
+ 
+         self.send_page(
+             f"<h1>Demanda #{demand.id}</h1>"
+-            f"{request_card}{action_card}{stages_card}{timeline_card}"
+-            '<a class="button secondary" href="/">Voltar</a>'
++            f"{info_card}{operations_card}{plan_card}"
++            '<p><a class="button secondary" href="/">Voltar</a> '
++            '<a class="button secondary" href="/consolidate">Consolidar com outras demandas</a></p>'
+         )
+ 
+-    def render_action_card(self, demand: Demand, operation, current_state) -> str:
+-        oid = demand.id
++    # ------------------------------------------------------- consolidação
+ 
+-        if operation is None:
+-            compatible = [r for r in RESOURCE_CATALOG.values() if r.unit == demand.unit.unit and r.available]
+-            if not compatible:
+-                return f"""
+-<div class="card warn"><h2>Planeamento</h2>
+-<p>Não há recursos no catálogo compatíveis com "{demand.unit.unit}".</p>
+-<a class="button" href="/resources">Adicionar recurso</a></div>"""
+-
+-            options = "".join(
+-                f'<option value="{r.id}">{r.name} — {r.capacity:g} {r.unit}</option>' for r in compatible
++    def render_consolidate(self) -> None:
++        candidates = [d for d in DEMANDS.values() if d.remaining_quantity > 1e-9]
++        if not candidates:
++            self.send_page(
++                "<h1>Consolidar demandas</h1>"
++                '<div class="card"><p class="muted">Não há demandas com quantidade por planear.</p></div>'
++                '<a class="button secondary" href="/">Voltar</a>'
+             )
+-            return f"""
+-<div class="card"><h2>Planeamento</h2>
+-<p>A demanda está validada. Escolha o recurso do catálogo e, se necessário, personalize as etapas.</p>
+-<form method="post" action="/action">
+-<input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="plan">
+-<div class="field"><label>Recurso</label><select name="resource_id" required>{options}</select></div>
++            return
++
++        rows = "".join(
++            f'<div class="checkrow">'
++            f'<input type="checkbox" name="demand_ids" value="{d.id}">'
++            f'<span>#{d.id} · {d.client} · {d.description} · restam {d.remaining_quantity:g} {d.unit.unit} · '
++            f'{d.origin.name} → {d.destination.name}</span>'
++            f'<input class="qty" name="qty_{d.id}" type="number" min="0.01" step="0.01" '
++            f'max="{d.remaining_quantity:g}" value="{d.remaining_quantity:g}">'
++            f"</div>"
++            for d in candidates
++        )
++        resource_options = "".join(
++            f'<option value="{r.id}">{r.name} — {r.capacity:g} {r.unit}</option>'
++            for r in RESOURCE_CATALOG.values()
++            if r.available
++        )
++
++        self.send_page(f"""
++<h1>Consolidar demandas</h1>
++<p class="muted">Selecione duas ou mais demandas (ou apenas uma parcial) para transportar juntas numa
++única operação. Todas têm de partilhar a mesma unidade de medida e o recurso escolhido tem de ter
++capacidade para a soma das quantidades seleccionadas.</p>
++<form method="post" action="/consolidate">
++<div class="card"><h2>Demandas</h2>{rows}</div>
++<div class="card">
++<div class="field"><label>Recurso</label><select name="resource_id" required>{resource_options or ""}</select></div>
+ <div class="field"><label>Etapas (separadas por vírgula)</label>
+-<input name="stages" placeholder="Ex.: recolha, transporte, entrega — deixe em branco para o padrão">
++<input name="stages" placeholder="Ex.: recolha, transporte, entrega — deixe em branco para o padrão"></div>
++<button>Criar operação consolidada</button>
++<a class="button secondary" href="/">Cancelar</a>
+ </div>
+-<button>Confirmar planeamento</button></form></div>"""
++</form>""")
++
++    # ------------------------------------------------------- operação (nível 2)
++
++    def render_operation(self, operation_id: str) -> None:
++        operation = OPERATIONS.get(operation_id)
++        if not operation:
++            self.send_page("<h1>Operação não encontrada</h1>", 404)
++            return
++
++        demand_rows = "".join(
++            f'<li><a href="/demand?id={a.demand_id}">#{a.demand_id}</a> — '
++            f'{DEMANDS[a.demand_id].client if a.demand_id in DEMANDS else "?"} — {a.quantity:g}</li>'
++            for a in operation.allocations
++        )
++        cargo_card = f'<div class="card"><h2>Carga desta operação</h2><ul>{demand_rows}</ul></div>'
+ 
+-        if current_state == OperationState.PLANNED:
+-            plan = PLANS[oid]
+-            resource = RESOURCES[oid]
++        action_card = self.render_action_card(operation)
++        stages_card = self.render_stages_card(operation)
++        timeline_card = self.render_timeline_card(operation)
++
++        self.send_page(
++            f"<h1>Operação #{operation.id}</h1>"
++            f"{cargo_card}{action_card}{stages_card}{timeline_card}"
++            '<a class="button secondary" href="/">Voltar</a>'
++        )
++
++    def render_action_card(self, operation) -> str:
++        oid = operation.id
++        state = operation.state
++        plan = PLANS.get(operation.plan_id)
++        resource = RESOURCE_CATALOG.get(plan.allocation.resource_id) if plan else None
++
++        if state == OperationState.PLANNED:
+             return f"""
+ <div class="card"><h2>Operação planeada</h2>
+-<p>Plano v{plan.version} · Recurso: <b>{resource.name}</b> · Capacidade: <b>{plan.capacity.quantity:g} {demand.unit.unit}</b> ({plan.capacity.state.value})</p>
++<p>Plano v{plan.version} · Recurso: <b>{resource.name if resource else "?"}</b> · Quantidade: <b>{operation.total_quantity:g}</b></p>
+ <form method="post" action="/action"><input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="prepare">
+ <button>Preparar operação</button></form></div>"""
+ 
+-        if current_state == OperationState.PREPARED:
++        if state == OperationState.PREPARED:
+             return f"""
+ <div class="card"><h2>Operação preparada</h2><p>Todas as etapas estão preparadas.</p>
+ <form method="post" action="/action"><input type="hidden" name="id" value="{oid}"><input type="hidden" name="action" value="start">
+ <button>Iniciar execução</button></form></div>"""
+ 
+-        if current_state == OperationState.IN_EXECUTION:
++        if state == OperationState.IN_EXECUTION:
+             return self.render_execution_card(operation, oid)
+ 
+-        if current_state == OperationState.EXCEPTION:
++        if state == OperationState.EXCEPTION:
+             exception = operation.exceptions[-1]
+             return f"""
+ <div class="card warn"><h2>⚠ Exceção — necessita intervenção</h2>
+@@ -289,7 +404,6 @@ class App(BaseHTTPRequestHandler):
+ 
+         # COMPLETED
+         measurement = MEASUREMENTS.get(oid, {})
+-        plan = PLANS.get(oid)
+         capacity_line = f'<p><b>Capacidade:</b> {plan.capacity.state.value}</p>' if plan else ""
+         return f"""
+ <div class="card ok"><h2>Resultado</h2>
+@@ -351,22 +465,17 @@ class App(BaseHTTPRequestHandler):
+         return card + "</div>"
+ 
+     def render_stages_card(self, operation) -> str:
+-        if not operation:
+-            return ""
+         items = "".join(f"<li>{s.sequence}. {s.name} — <b>{s.state.value}</b></li>" for s in operation.stages)
+         return f'<div class="card"><h2>Etapas</h2><ol>{items}</ol></div>'
+ 
+     def render_timeline_card(self, operation) -> str:
+-        if not operation:
+-            items = "<li>Demanda criada e validada</li>"
+-        else:
+-            items = "".join(
+-                f"<li>{event.timestamp:%H:%M:%S} — <b>{event.type}</b> — {event.description}"
+-                + (f" · {event.location}" if event.location else "")
+-                + (f" · {event.quantity:g}" if event.quantity is not None else "")
+-                + "</li>"
+-                for event in operation.events
+-            )
++        items = "".join(
++            f"<li>{event.timestamp:%H:%M:%S} — <b>{event.type}</b> — {event.description}"
++            + (f" · {event.location}" if event.location else "")
++            + (f" · {event.quantity:g}" if event.quantity is not None else "")
++            + "</li>"
++            for event in operation.events
++        ) or "<li>Sem eventos ainda.</li>"
+         return f'<div class="card"><h2>Linha do tempo</h2><ol>{items}</ol></div>'
+ 
+     # ----------------------------------------------------------------- POST
+@@ -378,14 +487,18 @@ class App(BaseHTTPRequestHandler):
+         if self.path == "/create":
+             self.handle_create(value)
+             return
+-
+-        if self.path == "/action":
+-            self.handle_action(value)
+-            return
+-
+         if self.path == "/resources":
+             self.handle_create_resource(value)
+             return
++        if self.path == "/plan-demand":
++            self.handle_plan_demand(value)
++            return
++        if self.path == "/consolidate":
++            self.handle_consolidate(form_data, value)
++            return
++        if self.path == "/action":
++            self.handle_action(value)
++            return
+ 
+         self.redirect("/")
+ 
+@@ -421,8 +534,8 @@ class App(BaseHTTPRequestHandler):
+         )
+         validate_demand(demand)
+         DEMANDS[demand_id] = demand
+-        persist(demand_id)
+-        self.redirect(f"/operation?id={demand_id}")
++        persist_demand(demand_id)
++        self.redirect(f"/demand?id={demand_id}")
+ 
+     def handle_create_resource(self, value) -> None:
+         try:
+@@ -440,24 +553,94 @@ class App(BaseHTTPRequestHandler):
+         storage.save_catalog_resource(resource)
+         self.redirect("/resources")
+ 
+-    def handle_action(self, value) -> None:
+-        demand_id = value("id")
+-        demand = DEMANDS.get(demand_id)
++    def _create_plan_and_operation(self, demands, resource, quantities, stages_raw):
++        """Ponto único de criação de Plano+Operação, partilhado entre o
++        planeamento de uma demanda (parcial ou total) e a consolidação de
++        várias demandas — ambos os casos passam pela mesma função de
++        domínio (create_plan aceita uma lista de demandas)."""
++        plan_id = next_id("P", PLANS)
++        operation_id = next_id("O", OPERATIONS)
++        stage_names = [s.strip() for s in stages_raw.split(",") if s.strip()] or None
++
++        plan = create_plan(demands, resource, plan_id, quantities=quantities)
++        operation = create_operation(plan, operation_id, stage_names)
++        PLANS[plan.id] = plan
++        OPERATIONS[operation.id] = operation
++        persist_operation(operation, plan)
++        return operation
++
++    def handle_plan_demand(self, value) -> None:
++        demand = DEMANDS.get(value("demand_id"))
+         if not demand:
+             self.send_page("<h1>Demanda não encontrada</h1>", 404)
+             return
++        resource = RESOURCE_CATALOG.get(value("resource_id"))
++        if resource is None:
++            self.send_page("<h1>Ação não pode ser concluída</h1><p>Recurso não encontrado no catálogo</p>", 400)
++            return
++
++        try:
++            quantity = float(value("quantity"))
++        except ValueError:
++            quantity = 0
++
++        try:
++            operation = self._create_plan_and_operation(
++                demand, resource, {demand.id: quantity}, value("stages")
++            )
++        except ValueError as exc:
++            self.send_page(f"<h1>Ação não pode ser concluída</h1><p>{exc}</p>", 400)
++            return
+ 
++        self.redirect(f"/operation?id={operation.id}")
++
++    def handle_consolidate(self, form_data, value) -> None:
++        demand_ids = field_values(form_data, "demand_ids")
++        if len(demand_ids) < 1:
++            self.send_page("<h1>Ação não pode ser concluída</h1><p>Selecione pelo menos uma demanda</p>", 400)
++            return
++
++        demands = []
++        quantities = {}
++        for demand_id in demand_ids:
++            demand = DEMANDS.get(demand_id)
++            if not demand:
++                self.send_page(f"<h1>Ação não pode ser concluída</h1><p>Demanda {demand_id} não encontrada</p>", 400)
++                return
++            try:
++                quantities[demand_id] = float(field_value(form_data, f"qty_{demand_id}"))
++            except ValueError:
++                quantities[demand_id] = 0
++            demands.append(demand)
++
++        resource = RESOURCE_CATALOG.get(value("resource_id"))
++        if resource is None:
++            self.send_page("<h1>Ação não pode ser concluída</h1><p>Recurso não encontrado no catálogo</p>", 400)
++            return
++
++        try:
++            operation = self._create_plan_and_operation(demands, resource, quantities, value("stages"))
++        except ValueError as exc:
++            self.send_page(f"<h1>Ação não pode ser concluída</h1><p>{exc}</p>", 400)
++            return
++
++        self.redirect(f"/operation?id={operation.id}")
++
++    def handle_action(self, value) -> None:
++        operation_id = value("id")
++        operation = OPERATIONS.get(operation_id)
++        if not operation:
++            self.send_page("<h1>Operação não encontrada</h1>", 404)
++            return
++
++        plan = PLANS.get(operation.plan_id)
+         action = value("action")
+-        operation = OPERATIONS.get(demand_id)
+ 
+         try:
+-            if action == "plan":
+-                self.action_plan(demand, demand_id, value)
+-            elif action == "prepare":
++            if action == "prepare":
+                 operation.prepare()
+             elif action == "start":
+-                start_operation(operation, PLANS[demand_id])
+-                demand.state = DemandState.IN_EXECUTION
++                start_operation(operation, plan, DEMANDS)
+             elif action == "start_stage":
+                 self.find_stage(operation, value("stage_id")).start()
+             elif action == "complete_stage":
+@@ -469,31 +652,19 @@ class App(BaseHTTPRequestHandler):
+             elif action == "exception":
+                 self.action_register_exception(operation, value)
+             elif action == "replan":
+-                self.action_replan(demand, demand_id, operation, value)
++                self.action_replan(operation, plan, value)
++                plan = PLANS.get(operation.plan_id)
+             elif action == "complete":
+-                complete_operation(operation, PLANS[demand_id], value("result"), value("evidence"))
+-                MEASUREMENTS[demand_id] = measure_operation(demand.unit.quantity, demand.unit.quantity, 8, 9.5)
+-                demand.state = DemandState.COMPLETED
++                complete_operation(operation, plan, value("result"), value("evidence"), DEMANDS)
++                MEASUREMENTS[operation.id] = measure_operation(
++                    operation.total_quantity, operation.total_quantity, 8, 9.5
++                )
+         except ValueError as exc:
+             self.send_page(f"<h1>Ação não pode ser concluída</h1><p>{exc}</p>", 400)
+             return
+ 
+-        persist(demand_id)
+-        self.redirect(f"/operation?id={demand_id}")
+-
+-    def action_plan(self, demand: Demand, demand_id: str, value) -> None:
+-        resource = RESOURCE_CATALOG.get(value("resource_id"))
+-        if resource is None:
+-            raise ValueError("Recurso não encontrado no catálogo")
+-
+-        stage_names_raw = value("stages")
+-        stage_names = [s.strip() for s in stage_names_raw.split(",") if s.strip()] or None
+-
+-        plan = create_plan(demand, resource, f"P-{demand_id}-v1")
+-        operation = create_operation(demand, plan, f"O-{demand_id}", stage_names)
+-        RESOURCES[demand_id] = resource
+-        PLANS[demand_id] = plan
+-        OPERATIONS[demand_id] = operation
++        persist_operation(operation, plan)
++        self.redirect(f"/operation?id={operation_id}")
+ 
+     def action_register_exception(self, operation, value) -> None:
+         current_stage_id = next(
+@@ -508,14 +679,14 @@ class App(BaseHTTPRequestHandler):
+         )
+         operation.register_exception(exception)
+ 
+-    def action_replan(self, demand: Demand, demand_id: str, operation, value) -> None:
++    def action_replan(self, operation, plan, value) -> None:
+         if not operation.exceptions or operation.state != OperationState.EXCEPTION:
+             raise ValueError("Não há exceção pendente para replanear")
+ 
+-        old_plan = PLANS[demand_id]
+-        resource = RESOURCES[demand_id]
+-        new_plan = create_replanned_plan(demand, resource, f"P-{demand_id}-v{old_plan.version + 1}", old_plan)
+-        PLANS[demand_id] = new_plan
++        resource = RESOURCE_CATALOG.get(plan.allocation.resource_id)
++        new_plan_id = next_id("P", PLANS)
++        new_plan = create_replanned_plan(resource, new_plan_id, plan)
++        PLANS[new_plan.id] = new_plan
+ 
+         exception = operation.exceptions[-1]
+         decision_text = value("description")
+diff --git a/nexxus_logistica.py b/nexxus_logistica.py
+index 995cb79..0bed4fd 100644
+--- a/nexxus_logistica.py
++++ b/nexxus_logistica.py
+@@ -3,6 +3,33 @@
+ Implementa o ciclo mínimo definido no Core Logística:
+ Demanda -> Plano -> Operação (com Etapas) -> Execução -> Exceção/Replaneamento
+ -> Resultado -> Medição.
++
++Cardinalidade Demanda <-> Operação
++-----------------------------------
++A versão anterior assumia implicitamente 1 Demanda : 1 Plano : 1 Operação, o
++que não cobre dois casos comuns em logística real (auditoria do Core
++Logística como Nível 2):
++
++  1) DIVISÃO — uma demanda grande (ex.: 30t) excede a capacidade de um único
++     recurso e precisa de ser servida por duas ou mais operações (dois
++     veículos, duas viagens).
++  2) CONSOLIDAÇÃO — várias demandas de clientes diferentes são transportadas
++     juntas numa única operação (um camião, uma rota, várias entregas).
++
++Para cobrir os dois casos sem inventar nada fora do Core Logística já
++definido, o Plano e a Operação passam a referenciar uma LISTA de
++`DemandAllocation` (demanda + quantidade coberta por esta operação), em vez
++de um único `demand_id`. Cada Demanda guarda quanto da sua quantidade total
++já foi alocada a algum plano (`allocated_quantity`) e quanto já foi
++efectivamente entregue (`delivered_quantity`). Isto permite:
++
++  - dividir uma demanda por várias operações (cada uma com uma
++    `DemandAllocation` parcial para a mesma demand_id);
++  - agrupar várias demandas na mesma operação (cada uma com a sua própria
++    `DemandAllocation` dentro da mesma lista);
++
++sem precisar de um conceito novo de "Manifesto" ou "Consolidação" — a lista
++de alocações já é suficiente para os dois casos.
+ """
+ 
+ from dataclasses import dataclass, field
+@@ -84,6 +111,25 @@ class Demand:
+     state: DemandState = DemandState.RECEIVED
+     conditions: list[str] = field(default_factory=list)
+     notes: str = ""
++    # Quanto da quantidade total já foi coberto por algum plano. Fica menor
++    # que unit.quantity enquanto a demanda ainda está a ser dividida por
++    # várias operações (uma parte planeada, outra ainda por planear).
++    allocated_quantity: float = 0.0
++    # Quanto já foi efectivamente entregue (operações concluídas).
++    delivered_quantity: float = 0.0
++
++    @property
++    def remaining_quantity(self) -> float:
++        """Quantidade que ainda não foi coberta por nenhum plano."""
++        return round(self.unit.quantity - self.allocated_quantity, 6)
++
++    @property
++    def fully_allocated(self) -> bool:
++        return self.remaining_quantity <= 1e-9
++
++    @property
++    def fully_delivered(self) -> bool:
++        return round(self.unit.quantity - self.delivered_quantity, 6) <= 1e-9
+ 
+ 
+ @dataclass
+@@ -112,6 +158,10 @@ class Capacity:
+ 
+ @dataclass
+ class Allocation:
++    """Alocação do lado do RECURSO: quanto da capacidade do recurso está
++    comprometida com este plano (independentemente de quantas demandas o
++    plano cobre)."""
++
+     resource_id: str
+     capacity_id: str
+     quantity: float
+@@ -120,10 +170,21 @@ class Allocation:
+     end: datetime | None = None
+ 
+ 
++@dataclass
++class DemandAllocation:
++    """Alocação do lado da DEMANDA: quanto desta demanda específica está
++    coberto por um dado Plano/Operação. Uma lista destas é o que permite
++    dividir uma demanda por várias operações, ou juntar várias demandas
++    numa só operação."""
++
++    demand_id: str
++    quantity: float
++
++
+ @dataclass
+ class Plan:
+     id: str
+-    demand_id: str
++    allocations: list[DemandAllocation]
+     allocation: Allocation
+     capacity: Capacity
+     version: int = 1
+@@ -131,6 +192,14 @@ class Plan:
+     planned_start: datetime | None = None
+     planned_end: datetime | None = None
+ 
++    @property
++    def demand_ids(self) -> list[str]:
++        return [a.demand_id for a in self.allocations]
++
++    @property
++    def total_quantity(self) -> float:
++        return round(sum(a.quantity for a in self.allocations), 6)
++
+ 
+ @dataclass
+ class Stage:
+@@ -208,8 +277,8 @@ class LogisticsException:
+ @dataclass
+ class Operation:
+     id: str
+-    demand_id: str
+     plan_id: str
++    allocations: list[DemandAllocation]
+     stages: list[Stage]
+     state: OperationState = OperationState.PLANNED
+     events: list[Event] = field(default_factory=list)
+@@ -217,6 +286,14 @@ class Operation:
+     result: str | None = None
+     evidence: str | None = None
+ 
++    @property
++    def demand_ids(self) -> list[str]:
++        return [a.demand_id for a in self.allocations]
++
++    @property
++    def total_quantity(self) -> float:
++        return round(sum(a.quantity for a in self.allocations), 6)
++
+     def prepare(self) -> None:
+         if self.state != OperationState.PLANNED:
+             raise ValueError("Operation must be planned before preparing")
+@@ -253,8 +330,8 @@ class Operation:
+     def replan(self, plan: Plan) -> None:
+         if self.state != OperationState.EXCEPTION:
+             raise ValueError("Replanning requires an exception state")
+-        if plan.demand_id != self.demand_id:
+-            raise ValueError("Plan does not belong to demand")
++        if set(plan.demand_ids) != set(self.demand_ids):
++            raise ValueError("Plan does not cover the same demands as the operation")
+         self.plan_id = plan.id
+         self.state = OperationState.IN_EXECUTION
+         self.register_event("replanned", f"plan={plan.id}, version={plan.version}")
+@@ -276,35 +353,79 @@ def validate_demand(demand: Demand) -> None:
+     demand.state = DemandState.VALIDATED
+ 
+ 
+-def _check_resource_for_demand(resource: Resource, demand: Demand) -> None:
++def _as_demand_list(demands) -> list:
++    """Aceita tanto uma única Demand como uma lista de Demand, para que
++    chamadas de uma única demanda (o caso mais comum) não precisem de
++    embrulhar tudo em listas."""
++    if isinstance(demands, Demand):
++        return [demands]
++    demands = list(demands)
++    if not demands:
++        raise ValueError("At least one demand is required")
++    return demands
++
++
++def _check_resource_for_quantity(resource: Resource, unit: str, total_quantity: float) -> None:
+     """Validações de recurso partilhadas entre o primeiro plano e o replaneamento."""
+     if not resource.available:
+         raise ValueError("Resource is not available")
+-    if resource.unit != demand.unit.unit:
++    if resource.unit != unit:
+         raise ValueError("Resource capacity unit does not match logistics unit")
+-    if resource.capacity < demand.unit.quantity:
++    if resource.capacity < total_quantity:
+         raise ValueError("Resource capacity is insufficient")
+ 
+ 
+ def create_plan(
+-    demand: Demand,
++    demands,
+     resource: Resource,
+     plan_id: str,
++    quantities: dict[str, float] | None = None,
+     version: int = 1,
+     planned_start: datetime | None = None,
+     planned_end: datetime | None = None,
+ ) -> Plan:
+-    """Cria o primeiro plano de uma demanda. Exige que a demanda esteja validada."""
+-    if demand.state != DemandState.VALIDATED:
+-        raise ValueError("Demand must be validated before planning")
+-    _check_resource_for_demand(resource, demand)
+-    capacity = Capacity(f"CAP-{plan_id}", resource.id, demand.unit.quantity, resource.unit)
++    """Cria um plano cobrindo uma ou mais demandas (consolidação) e/ou uma
++    parte da quantidade de cada uma (divisão).
++
++    `demands` pode ser uma única Demand (caso comum: uma demanda, quantidade
++    total) ou uma lista de Demand (consolidação). `quantities`, se indicado,
++    é um mapa demand_id -> quantidade a cobrir por este plano; quando
++    omitido, assume-se a quantidade restante (`remaining_quantity`) de cada
++    demanda, ou seja, o comportamento anterior (uma demanda, tudo de uma
++    vez) continua a funcionar sem alterações nas chamadas existentes.
++    """
++    demand_list = _as_demand_list(demands)
++    unit = demand_list[0].unit.unit
++
++    allocations: list[DemandAllocation] = []
++    for demand in demand_list:
++        if demand.state not in (DemandState.VALIDATED, DemandState.PLANNED):
++            raise ValueError(f"Demand {demand.id} must be validated before planning")
++        if demand.unit.unit != unit:
++            raise ValueError("All demands in a plan must share the same logistics unit")
++
++        quantity = demand.remaining_quantity if quantities is None else quantities.get(demand.id)
++        if quantity is None or quantity <= 0:
++            raise ValueError(f"Invalid planning quantity for demand {demand.id}")
++        if quantity > demand.remaining_quantity + 1e-9:
++            raise ValueError(f"Planning quantity exceeds remaining quantity for demand {demand.id}")
++
++        allocations.append(DemandAllocation(demand.id, quantity))
++
++    total_quantity = round(sum(a.quantity for a in allocations), 6)
++    _check_resource_for_quantity(resource, unit, total_quantity)
++
++    capacity = Capacity(f"CAP-{plan_id}", resource.id, total_quantity, resource.unit)
+     capacity.reserve()
+-    demand.state = DemandState.PLANNED
++
++    for demand, allocation in zip(demand_list, allocations):
++        demand.allocated_quantity = round(demand.allocated_quantity + allocation.quantity, 6)
++        demand.state = DemandState.PLANNED
++
+     return Plan(
+         id=plan_id,
+-        demand_id=demand.id,
+-        allocation=Allocation(resource.id, capacity.id, demand.unit.quantity),
++        allocations=allocations,
++        allocation=Allocation(resource.id, capacity.id, total_quantity),
+         capacity=capacity,
+         version=version,
+         planned_start=planned_start,
+@@ -313,7 +434,6 @@ def create_plan(
+ 
+ 
+ def create_replanned_plan(
+-    demand: Demand,
+     resource: Resource,
+     plan_id: str,
+     previous_plan: Plan,
+@@ -322,30 +442,33 @@ def create_replanned_plan(
+ ) -> Plan:
+     """Cria uma nova versão do plano durante o tratamento de uma exceção.
+ 
+-    Ao contrário de create_plan, NÃO exige que a demanda esteja em
+-    DemandState.VALIDATED, porque nesta altura a demanda já avançou para
+-    PLANNED ou IN_EXECUTION. Esta era a causa do bug em que qualquer
+-    tentativa de replaneamento a partir do app.py rebentava com
+-    "Demand must be validated before planning".
++    Cobre exactamente as mesmas demandas e quantidades do plano anterior
++    (`previous_plan.allocations`) — replanear troca o recurso e/ou o
++    tempo, não o que está a ser transportado. Ao contrário de create_plan,
++    NÃO exige que as demandas estejam em DemandState.VALIDATED, porque a
++    esta altura já avançaram para PLANNED ou IN_EXECUTION. Esta era a causa
++    do bug em que qualquer tentativa de replaneamento a partir do app.py
++    rebentava com "Demand must be validated before planning".
+ 
+     A capacidade do plano anterior é liberada e uma nova capacidade é
+     reservada e colocada imediatamente em uso, porque o replaneamento
+     retoma a execução de imediato (não volta a ficar apenas "planeada").
+     """
+-    if previous_plan.demand_id != demand.id:
+-        raise ValueError("Previous plan does not belong to demand")
+-    _check_resource_for_demand(resource, demand)
++    unit = previous_plan.capacity.unit
++    total_quantity = previous_plan.total_quantity
++    _check_resource_for_quantity(resource, unit, total_quantity)
++
+     if previous_plan.capacity.state == CapacityState.IN_USE:
+         previous_plan.capacity.release()
+ 
+-    new_capacity = Capacity(f"CAP-{plan_id}", resource.id, demand.unit.quantity, resource.unit)
++    new_capacity = Capacity(f"CAP-{plan_id}", resource.id, total_quantity, unit)
+     new_capacity.reserve()
+     new_capacity.use()
+ 
+     return Plan(
+         id=plan_id,
+-        demand_id=demand.id,
+-        allocation=Allocation(resource.id, new_capacity.id, demand.unit.quantity),
++        allocations=list(previous_plan.allocations),
++        allocation=Allocation(resource.id, new_capacity.id, total_quantity),
+         capacity=new_capacity,
+         version=previous_plan.version + 1,
+         planned_start=planned_start,
+@@ -353,33 +476,50 @@ def create_replanned_plan(
+     )
+ 
+ 
+-def start_operation(operation: Operation, plan: Plan) -> None:
+-    """Inicia a operação e coloca a capacidade reservada em uso."""
++def start_operation(operation: Operation, plan: Plan, demands: dict[str, Demand]) -> None:
++    """Inicia a operação, coloca a capacidade reservada em uso, e avança
++    para IN_EXECUTION cada demanda coberta por esta operação (uma demanda
++    dividida por várias operações só muda de estado quando a primeira
++    delas arranca; as restantes continuam PLANNED até arrancarem também)."""
+     operation.start()
+     plan.capacity.use()
+-
+-
+-def complete_operation(operation: Operation, plan: Plan, result: str, evidence: str) -> None:
+-    """Conclui a operação e liberta a capacidade que estava em uso."""
++    for allocation in operation.allocations:
++        demand = demands.get(allocation.demand_id)
++        if demand and demand.state == DemandState.PLANNED:
++            demand.state = DemandState.IN_EXECUTION
++
++
++def complete_operation(
++    operation: Operation, plan: Plan, result: str, evidence: str, demands: dict[str, Demand]
++) -> None:
++    """Conclui a operação, liberta a capacidade que estava em uso, e
++    contabiliza a quantidade entregue em cada demanda coberta por esta
++    operação. Uma demanda só passa a COMPLETED quando TODA a sua
++    quantidade tiver sido entregue — o que pode exigir mais do que uma
++    operação, no caso de uma demanda dividida."""
+     operation.complete(result, evidence)
+     plan.capacity.release()
++    for allocation in operation.allocations:
++        demand = demands.get(allocation.demand_id)
++        if demand is None:
++            continue
++        demand.delivered_quantity = round(demand.delivered_quantity + allocation.quantity, 6)
++        if demand.fully_delivered:
++            demand.state = DemandState.COMPLETED
+ 
+ 
+ def create_operation(
+-    demand: Demand,
+     plan: Plan,
+     operation_id: str,
+     stage_names: list[str] | None = None,
+ ) -> Operation:
+-    if plan.demand_id != demand.id:
+-        raise ValueError("Plan does not belong to demand")
+     resource_id = plan.allocation.resource_id
+     names = stage_names or ["pickup", "transport", "delivery"]
+     stages = [
+         Stage(f"{operation_id}-S{sequence}", name, sequence, resource_id=resource_id)
+         for sequence, name in enumerate(names, start=1)
+     ]
+-    return Operation(id=operation_id, demand_id=demand.id, plan_id=plan.id, stages=stages)
++    return Operation(id=operation_id, plan_id=plan.id, allocations=list(plan.allocations), stages=stages)
+ 
+ 
+ def measure_operation(
+@@ -399,7 +539,8 @@ def measure_operation(
+ 
+ 
+ def run_demo() -> dict:
+-    """Executa o cenário mínimo de ponta a ponta, incluindo replaneamento real."""
++    """Executa o cenário mínimo de ponta a ponta (uma demanda, uma
++    operação), incluindo replaneamento real."""
+     demand = Demand(
+         id="D-001",
+         unit=LogisticsUnit("U-001", 20_000),
+@@ -412,10 +553,9 @@ def run_demo() -> dict:
+ 
+     validate_demand(demand)
+     plan = create_plan(demand, resource, "P-001", planned_start=datetime.now())
+-    operation = create_operation(demand, plan, "O-001")
++    operation = create_operation(plan, "O-001")
+     operation.prepare()
+-    start_operation(operation, plan)
+-    demand.state = DemandState.IN_EXECUTION
++    start_operation(operation, plan, {demand.id: demand})
+ 
+     operation.stages[0].start()
+     operation.stages[0].complete()
+@@ -435,7 +575,7 @@ def run_demo() -> dict:
+ 
+     # create_replanned_plan já não exige que a demanda esteja VALIDATED --
+     # é chamada com a demanda em PLANNED/IN_EXECUTION, como acontece de facto.
+-    replanned = create_replanned_plan(demand, resource, "P-002", plan, planned_start=datetime.now())
++    replanned = create_replanned_plan(resource, "P-002", plan, planned_start=datetime.now())
+     operation.replan(replanned)
+     exception.close()
+ 
+@@ -444,8 +584,7 @@ def run_demo() -> dict:
+         stage.complete()
+ 
+     operation.register_event("arrival", "Chegada ao destino B", operation.stages[2].id)
+-    complete_operation(operation, replanned, "20 000 kg entregues", "POD-001")
+-    demand.state = DemandState.COMPLETED
++    complete_operation(operation, replanned, "20 000 kg entregues", "POD-001", {demand.id: demand})
+ 
+     measurement = measure_operation(20_000, 20_000, 8, 9.5)
+     return {
+@@ -458,7 +597,95 @@ def run_demo() -> dict:
+     }
+ 
+ 
++def run_demo_split() -> dict:
++    """Cenário de DIVISÃO: uma demanda de 30t excede a capacidade de um
++    único recurso (25t) e é servida por duas operações (dois veículos)."""
++    demand = Demand(
++        id="D-100",
++        unit=LogisticsUnit("U-100", 30_000),
++        origin=Point("A", "Fábrica Viana"),
++        destination=Point("B", "Armazém Luanda"),
++        client="Cliente XYZ",
++        description="Cimento",
++    )
++    validate_demand(demand)
++
++    truck_1 = Resource("R-101", "Camião 01", 25_000)
++    truck_2 = Resource("R-102", "Camião 02", 25_000)
++
++    plan_1 = create_plan(demand, truck_1, "P-100A", quantities={demand.id: 20_000})
++    assert demand.state == DemandState.PLANNED
++    assert demand.remaining_quantity == 10_000
++    op_1 = create_operation(plan_1, "O-100A")
++
++    plan_2 = create_plan(demand, truck_2, "P-100B", quantities={demand.id: 10_000})
++    assert demand.fully_allocated
++    op_2 = create_operation(plan_2, "O-100B")
++
++    demands = {demand.id: demand}
++    for operation, plan in ((op_1, plan_1), (op_2, plan_2)):
++        operation.prepare()
++        start_operation(operation, plan, demands)
++        for stage in operation.stages:
++            stage.start()
++            stage.complete()
++
++    # A demanda continua IN_EXECUTION até a SEGUNDA operação também concluir.
++    complete_operation(op_1, plan_1, "20t entregues (viagem 1/2)", "POD-100A", demands)
++    assert demand.state == DemandState.IN_EXECUTION
++    complete_operation(op_2, plan_2, "10t entregues (viagem 2/2)", "POD-100B", demands)
++    assert demand.state == DemandState.COMPLETED
++    assert demand.fully_delivered
++
++    return {"demand": demand, "operations": [op_1, op_2], "plans": [plan_1, plan_2]}
++
++
++def run_demo_consolidation() -> dict:
++    """Cenário de CONSOLIDAÇÃO: três demandas de clientes diferentes,
++    todas pequenas, são transportadas juntas numa única operação (um
++    camião, uma rota)."""
++    origin = Point("A", "Centro de distribuição")
++    destination = Point("B", "Zona industrial")
++
++    demand_a = Demand(id="D-200", unit=LogisticsUnit("U-200", 5_000), origin=origin, destination=destination, client="Cliente A")
++    demand_b = Demand(id="D-201", unit=LogisticsUnit("U-201", 8_000), origin=origin, destination=destination, client="Cliente B")
++    demand_c = Demand(id="D-202", unit=LogisticsUnit("U-202", 7_000), origin=origin, destination=destination, client="Cliente C")
++    for demand in (demand_a, demand_b, demand_c):
++        validate_demand(demand)
++
++    truck = Resource("R-200", "Camião consolidado", 25_000)
++
++    plan = create_plan([demand_a, demand_b, demand_c], truck, "P-200")
++    assert plan.total_quantity == 20_000
++    operation = create_operation(plan, "O-200")
++
++    demands = {d.id: d for d in (demand_a, demand_b, demand_c)}
++    operation.prepare()
++    start_operation(operation, plan, demands)
++    for stage in operation.stages:
++        stage.start()
++        stage.complete()
++
++    complete_operation(operation, plan, "3 entregas concluídas na mesma rota", "POD-200", demands)
++
++    assert all(d.state == DemandState.COMPLETED for d in demands.values())
++    return {"demands": demands, "operation": operation, "plan": plan}
++
++
+ if __name__ == "__main__":
+     result = run_demo()
+-    print(result["operation"].state.value)
+-    print(result["measurement"])
++    print("run_demo:", result["operation"].state.value, result["measurement"])
++
++    split_result = run_demo_split()
++    print(
++        "run_demo_split:",
++        split_result["demand"].state.value,
++        [op.state.value for op in split_result["operations"]],
++    )
++
++    consolidation_result = run_demo_consolidation()
++    print(
++        "run_demo_consolidation:",
++        [d.state.value for d in consolidation_result["demands"].values()],
++        consolidation_result["operation"].state.value,
++    )
+diff --git a/storage.py b/storage.py
+index 34c4bc1..f0c3c6f 100644
+--- a/storage.py
++++ b/storage.py
+@@ -1,10 +1,13 @@
+ """Persistência em SQLite para o NEXXUS Logística.
+ 
+ Cada agregado (Demanda, Recurso, Plano, Operação, Medição) é guardado como
+-JSON numa tabela própria, indexado pela chave usada em app.py (o id da
+-demanda). Isto evita perder todo o estado ao reiniciar o processo, sem
+-introduzir infraestrutura nova: sqlite3 é biblioteca padrão do Python, e a
+-base de dados é um único ficheiro local.
++JSON numa tabela própria, indexado pela chave usada em app.py: demandas e
++recursos pela sua própria id; planos e operações pela SUA PRÓPRIA id
++(plan_id / operation_id), já que desde o suporte a divisão/consolidação um
++plano ou operação pode cobrir mais do que uma demanda, e uma demanda pode
++ter mais do que um plano/operação. Isto evita perder todo o estado ao
++reiniciar o processo, sem introduzir infraestrutura nova: sqlite3 é
++biblioteca padrão do Python, e a base de dados é um único ficheiro local.
+ """
+ 
+ import json
+@@ -20,6 +23,7 @@ from nexxus_logistica import (
+     Capacity,
+     CapacityState,
+     Demand,
++    DemandAllocation,
+     DemandState,
+     Event,
+     ExceptionState,
+@@ -36,7 +40,7 @@ from nexxus_logistica import (
+ 
+ DB_PATH = os.environ.get("NEXXUS_DB_PATH", str(Path(__file__).parent / "nexxus.db"))
+ 
+-_TABLES = ("demands", "resources", "resource_catalog", "plans", "operations", "measurements")
++_TABLES = ("demands", "resource_catalog", "plans", "operations", "measurements")
+ 
+ 
+ def _connect() -> sqlite3.Connection:
+@@ -99,20 +103,16 @@ def save_demand(demand: Demand) -> None:
+     _save("demands", demand.id, asdict(demand))
+ 
+ 
+-def save_resource(key: str, resource: Resource) -> None:
+-    _save("resources", key, asdict(resource))
+-
+-
+ def save_catalog_resource(resource: Resource) -> None:
+     _save("resource_catalog", resource.id, asdict(resource))
+ 
+ 
+-def save_plan(key: str, plan: Plan) -> None:
+-    _save("plans", key, asdict(plan))
++def save_plan(plan: Plan) -> None:
++    _save("plans", plan.id, asdict(plan))
+ 
+ 
+-def save_operation(key: str, operation: Operation) -> None:
+-    _save("operations", key, asdict(operation))
++def save_operation(operation: Operation) -> None:
++    _save("operations", operation.id, asdict(operation))
+ 
+ 
+ def save_measurement(key: str, measurement: dict) -> None:
+@@ -133,9 +133,15 @@ def _demand_from_dict(d: dict) -> Demand:
+         state=DemandState(d["state"]),
+         conditions=d.get("conditions", []),
+         notes=d.get("notes", ""),
++        allocated_quantity=d.get("allocated_quantity", 0.0),
++        delivered_quantity=d.get("delivered_quantity", 0.0),
+     )
+ 
+ 
++def _allocations_from_list(raw: list) -> list[DemandAllocation]:
++    return [DemandAllocation(demand_id=a["demand_id"], quantity=a["quantity"]) for a in raw]
++
++
+ def _plan_from_dict(d: dict) -> Plan:
+     a = d["allocation"]
+     c = d["capacity"]
+@@ -156,7 +162,7 @@ def _plan_from_dict(d: dict) -> Plan:
+     )
+     return Plan(
+         id=d["id"],
+-        demand_id=d["demand_id"],
++        allocations=_allocations_from_list(d["allocations"]),
+         allocation=allocation,
+         capacity=capacity,
+         version=d.get("version", 1),
+@@ -210,8 +216,8 @@ def _exception_from_dict(d: dict) -> LogisticsException:
+ def _operation_from_dict(d: dict) -> Operation:
+     return Operation(
+         id=d["id"],
+-        demand_id=d["demand_id"],
+         plan_id=d["plan_id"],
++        allocations=_allocations_from_list(d["allocations"]),
+         stages=[_stage_from_dict(s) for s in d["stages"]],
+         state=OperationState(d["state"]),
+         events=[_event_from_dict(e) for e in d.get("events", [])],
+@@ -225,10 +231,6 @@ def load_demands() -> dict:
+     return _load_typed("demands", _demand_from_dict)
+ 
+ 
+-def load_resources() -> dict:
+-    return _load_typed("resources", lambda value: Resource(**value))
+-
+-
+ def load_catalog_resources() -> dict:
+     return _load_typed("resource_catalog", lambda value: Resource(**value))
+ 
+diff --git a/test_nexxus_logistica.py b/test_nexxus_logistica.py
+index 9c458c4..09c3e62 100644
+--- a/test_nexxus_logistica.py
++++ b/test_nexxus_logistica.py
+@@ -19,10 +19,10 @@ from nexxus_logistica import (
+ )
+ 
+ 
+-def make_demand(quantity=20_000):
++def make_demand(quantity=20_000, demand_id="D-001"):
+     return Demand(
+-        id="D-001",
+-        unit=LogisticsUnit("U-001", quantity),
++        id=demand_id,
++        unit=LogisticsUnit(f"U-{demand_id}", quantity),
+         origin=Point("A", "Origem A"),
+         destination=Point("B", "Destino B"),
+         client="Cliente ABC",
+@@ -30,13 +30,15 @@ def make_demand(quantity=20_000):
+     )
+ 
+ 
++# --------------------------------------------------------- fluxo original (1:1:1)
++
+ def test_end_to_end_flow_with_stages_exception_and_replanning():
+     demand = make_demand()
+     resource = Resource("R-001", "Veículo 01", 25_000)
+ 
+     validate_demand(demand)
+     plan = create_plan(demand, resource, "P-001")
+-    operation = create_operation(demand, plan, "O-001")
++    operation = create_operation(plan, "O-001")
+ 
+     assert operation.state == OperationState.PLANNED
+     assert plan.capacity.state == CapacityState.RESERVED
+@@ -44,8 +46,10 @@ def test_end_to_end_flow_with_stages_exception_and_replanning():
+     assert operation.state == OperationState.PREPARED
+     assert all(stage.state == StageState.PREPARED for stage in operation.stages)
+ 
+-    start_operation(operation, plan)
++    demands = {demand.id: demand}
++    start_operation(operation, plan, demands)
+     assert plan.capacity.state == CapacityState.IN_USE
++    assert demand.state == DemandState.IN_EXECUTION
+     operation.stages[0].start()
+     operation.stages[0].complete()
+     event = operation.register_event("departure", "Saída", operation.stages[1].id)
+@@ -67,7 +71,7 @@ def test_end_to_end_flow_with_stages_exception_and_replanning():
+ 
+     # Este é o caminho que estava partido: replanear com a mesma função que o
+     # app.py usa (create_replanned_plan), não construindo o Plan manualmente.
+-    replanned = create_replanned_plan(demand, resource, "P-002", plan)
++    replanned = create_replanned_plan(resource, "P-002", plan)
+     assert replanned.version == 2
+     assert plan.capacity.state == CapacityState.RELEASED
+     assert replanned.capacity.state == CapacityState.IN_USE
+@@ -79,14 +83,15 @@ def test_end_to_end_flow_with_stages_exception_and_replanning():
+         stage.start()
+         stage.complete()
+ 
+-    complete_operation(operation, replanned, "20 t entregues", "POD-001")
+-    demand.state = DemandState.COMPLETED
++    complete_operation(operation, replanned, "20 t entregues", "POD-001", demands)
+ 
+     assert operation.state == OperationState.COMPLETED
+     assert all(stage.state == StageState.COMPLETED for stage in operation.stages)
+     assert operation.result == "20 t entregues"
+     assert operation.evidence == "POD-001"
+     assert replanned.capacity.state == CapacityState.RELEASED
++    assert demand.state == DemandState.COMPLETED
++    assert demand.fully_delivered
+ 
+ 
+ def test_replanning_does_not_require_demand_to_be_revalidated():
+@@ -101,9 +106,9 @@ def test_replanning_does_not_require_demand_to_be_revalidated():
+     plan = create_plan(demand, resource, "P-001")
+     assert demand.state == DemandState.PLANNED
+ 
+-    replanned = create_replanned_plan(demand, resource, "P-002", plan)
++    replanned = create_replanned_plan(resource, "P-002", plan)
+     assert replanned.version == 2
+-    assert replanned.demand_id == demand.id
++    assert replanned.demand_ids == [demand.id]
+ 
+ 
+ def test_capacity_must_be_sufficient():
+@@ -122,7 +127,7 @@ def test_operation_cannot_start_before_prepared():
+     demand = make_demand()
+     validate_demand(demand)
+     plan = create_plan(demand, Resource("R-001", "Veículo 01", 25_000), "P-001")
+-    operation = create_operation(demand, plan, "O-001")
++    operation = create_operation(plan, "O-001")
+ 
+     try:
+         operation.start()
+@@ -140,16 +145,17 @@ def test_capacity_lifecycle_reserved_in_use_released():
+     assert plan.capacity.state == CapacityState.RESERVED
+     assert plan.allocation.capacity_id == plan.capacity.id
+ 
+-    operation = create_operation(demand, plan, "O-001")
++    operation = create_operation(plan, "O-001")
+     operation.prepare()
+-    start_operation(operation, plan)
++    demands = {demand.id: demand}
++    start_operation(operation, plan, demands)
+     assert plan.capacity.state == CapacityState.IN_USE
+ 
+     for stage in operation.stages:
+         stage.start()
+         stage.complete()
+ 
+-    complete_operation(operation, plan, "entregue", "POD-001")
++    complete_operation(operation, plan, "entregue", "POD-001", demands)
+     assert plan.capacity.state == CapacityState.RELEASED
+ 
+ 
+@@ -158,3 +164,127 @@ def test_measurement_calculates_deviation():
+ 
+     assert measurement["quantity_deviation"] == -500
+     assert measurement["duration_deviation_hours"] == 1.5
++
++
++# --------------------------------------------------------- divisão (1 demanda : N operações)
++
++def test_demand_can_be_split_across_two_operations():
++    """Cenário identificado na auditoria do Core Logística: uma demanda de
++    30t excede a capacidade de um único recurso (25t) e precisa de ser
++    servida por duas operações."""
++    demand = make_demand(30_000, demand_id="D-100")
++    validate_demand(demand)
++
++    truck_1 = Resource("R-101", "Camião 01", 25_000)
++    truck_2 = Resource("R-102", "Camião 02", 25_000)
++
++    plan_1 = create_plan(demand, truck_1, "P-100A", quantities={demand.id: 20_000})
++    assert demand.state == DemandState.PLANNED
++    assert demand.allocated_quantity == 20_000
++    assert demand.remaining_quantity == 10_000
++    assert not demand.fully_allocated
++
++    plan_2 = create_plan(demand, truck_2, "P-100B", quantities={demand.id: 10_000})
++    assert demand.allocated_quantity == 30_000
++    assert demand.fully_allocated
++
++    op_1 = create_operation(plan_1, "O-100A")
++    op_2 = create_operation(plan_2, "O-100B")
++    assert op_1.demand_ids == [demand.id]
++    assert op_2.demand_ids == [demand.id]
++
++    demands = {demand.id: demand}
++    for operation, plan in ((op_1, plan_1), (op_2, plan_2)):
++        operation.prepare()
++        start_operation(operation, plan, demands)
++        for stage in operation.stages:
++            stage.start()
++            stage.complete()
++
++    complete_operation(op_1, plan_1, "20t entregues", "POD-100A", demands)
++    # A demanda ainda não está totalmente entregue: falta a segunda viagem.
++    assert demand.state == DemandState.IN_EXECUTION
++    assert not demand.fully_delivered
++
++    complete_operation(op_2, plan_2, "10t entregues", "POD-100B", demands)
++    assert demand.state == DemandState.COMPLETED
++    assert demand.fully_delivered
++    assert demand.delivered_quantity == 30_000
++
++
++def test_cannot_plan_more_than_remaining_quantity():
++    demand = make_demand(30_000, demand_id="D-101")
++    validate_demand(demand)
++    resource = Resource("R-101", "Camião 01", 25_000)
++
++    create_plan(demand, resource, "P-101A", quantities={demand.id: 20_000})
++    try:
++        create_plan(demand, resource, "P-101B", quantities={demand.id: 20_000})
++        assert False, "Expected planning quantity to exceed remaining quantity"
++    except ValueError as exc:
++        assert "remaining" in str(exc).lower()
++
++
++# --------------------------------------------------------- consolidação (N demandas : 1 operação)
++
++def test_multiple_demands_can_be_consolidated_into_one_operation():
++    """Cenário identificado na auditoria do Core Logística: três demandas de
++    clientes diferentes, transportadas juntas numa única operação."""
++    origin = Point("A", "Centro de distribuição")
++    destination = Point("B", "Zona industrial")
++    demand_a = Demand(id="D-200", unit=LogisticsUnit("U-200", 5_000), origin=origin, destination=destination, client="Cliente A")
++    demand_b = Demand(id="D-201", unit=LogisticsUnit("U-201", 8_000), origin=origin, destination=destination, client="Cliente B")
++    demand_c = Demand(id="D-202", unit=LogisticsUnit("U-202", 7_000), origin=origin, destination=destination, client="Cliente C")
++    for demand in (demand_a, demand_b, demand_c):
++        validate_demand(demand)
++
++    truck = Resource("R-200", "Camião consolidado", 25_000)
++    plan = create_plan([demand_a, demand_b, demand_c], truck, "P-200")
++    assert plan.total_quantity == 20_000
++    assert set(plan.demand_ids) == {"D-200", "D-201", "D-202"}
++
++    operation = create_operation(plan, "O-200")
++    demands = {d.id: d for d in (demand_a, demand_b, demand_c)}
++
++    operation.prepare()
++    start_operation(operation, plan, demands)
++    assert all(d.state == DemandState.IN_EXECUTION for d in demands.values())
++
++    for stage in operation.stages:
++        stage.start()
++        stage.complete()
++
++    complete_operation(operation, plan, "3 entregas concluídas", "POD-200", demands)
++
++    assert all(d.state == DemandState.COMPLETED for d in demands.values())
++    assert demand_a.delivered_quantity == 5_000
++    assert demand_b.delivered_quantity == 8_000
++    assert demand_c.delivered_quantity == 7_000
++
++
++def test_consolidation_requires_matching_unit():
++    demand_a = Demand(id="D-300", unit=LogisticsUnit("U-300", 5, "t"), origin=Point("A", "A"), destination=Point("B", "B"))
++    demand_b = Demand(id="D-301", unit=LogisticsUnit("U-301", 5, "kg"), origin=Point("A", "A"), destination=Point("B", "B"))
++    validate_demand(demand_a)
++    validate_demand(demand_b)
++    resource = Resource("R-300", "Camião", 100, "t")
++
++    try:
++        create_plan([demand_a, demand_b], resource, "P-300")
++        assert False, "Expected unit mismatch error"
++    except ValueError as exc:
++        assert "unit" in str(exc).lower()
++
++
++def test_consolidated_capacity_must_cover_the_sum_of_demands():
++    demand_a = Demand(id="D-400", unit=LogisticsUnit("U-400", 15_000), origin=Point("A", "A"), destination=Point("B", "B"))
++    demand_b = Demand(id="D-401", unit=LogisticsUnit("U-401", 15_000), origin=Point("A", "A"), destination=Point("B", "B"))
++    validate_demand(demand_a)
++    validate_demand(demand_b)
++    resource = Resource("R-400", "Camião", 25_000)
++
++    try:
++        create_plan([demand_a, demand_b], resource, "P-400")
++        assert False, "Expected insufficient capacity error"
++    except ValueError as exc:
++        assert "capacity" in str(exc).lower()

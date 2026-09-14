@@ -1,10 +1,13 @@
 """Persistência em SQLite para o NEXXUS Logística.
 
 Cada agregado (Demanda, Recurso, Plano, Operação, Medição) é guardado como
-JSON numa tabela própria, indexado pela chave usada em app.py (o id da
-demanda). Isto evita perder todo o estado ao reiniciar o processo, sem
-introduzir infraestrutura nova: sqlite3 é biblioteca padrão do Python, e a
-base de dados é um único ficheiro local.
+JSON numa tabela própria, indexado pela chave usada em app.py: demandas e
+recursos pela sua própria id; planos e operações pela SUA PRÓPRIA id
+(plan_id / operation_id), já que desde o suporte a divisão/consolidação um
+plano ou operação pode cobrir mais do que uma demanda, e uma demanda pode
+ter mais do que um plano/operação. Isto evita perder todo o estado ao
+reiniciar o processo, sem introduzir infraestrutura nova: sqlite3 é
+biblioteca padrão do Python, e a base de dados é um único ficheiro local.
 """
 
 import json
@@ -20,6 +23,7 @@ from nexxus_logistica import (
     Capacity,
     CapacityState,
     Demand,
+    DemandAllocation,
     DemandState,
     Event,
     ExceptionState,
@@ -36,7 +40,7 @@ from nexxus_logistica import (
 
 DB_PATH = os.environ.get("NEXXUS_DB_PATH", str(Path(__file__).parent / "nexxus.db"))
 
-_TABLES = ("demands", "resources", "resource_catalog", "plans", "operations", "measurements")
+_TABLES = ("demands", "resource_catalog", "plans", "operations", "measurements")
 
 
 def _connect() -> sqlite3.Connection:
@@ -99,20 +103,16 @@ def save_demand(demand: Demand) -> None:
     _save("demands", demand.id, asdict(demand))
 
 
-def save_resource(key: str, resource: Resource) -> None:
-    _save("resources", key, asdict(resource))
-
-
 def save_catalog_resource(resource: Resource) -> None:
     _save("resource_catalog", resource.id, asdict(resource))
 
 
-def save_plan(key: str, plan: Plan) -> None:
-    _save("plans", key, asdict(plan))
+def save_plan(plan: Plan) -> None:
+    _save("plans", plan.id, asdict(plan))
 
 
-def save_operation(key: str, operation: Operation) -> None:
-    _save("operations", key, asdict(operation))
+def save_operation(operation: Operation) -> None:
+    _save("operations", operation.id, asdict(operation))
 
 
 def save_measurement(key: str, measurement: dict) -> None:
@@ -133,7 +133,13 @@ def _demand_from_dict(d: dict) -> Demand:
         state=DemandState(d["state"]),
         conditions=d.get("conditions", []),
         notes=d.get("notes", ""),
+        allocated_quantity=d.get("allocated_quantity", 0.0),
+        delivered_quantity=d.get("delivered_quantity", 0.0),
     )
+
+
+def _allocations_from_list(raw: list) -> list[DemandAllocation]:
+    return [DemandAllocation(demand_id=a["demand_id"], quantity=a["quantity"]) for a in raw]
 
 
 def _plan_from_dict(d: dict) -> Plan:
@@ -156,7 +162,7 @@ def _plan_from_dict(d: dict) -> Plan:
     )
     return Plan(
         id=d["id"],
-        demand_id=d["demand_id"],
+        allocations=_allocations_from_list(d["allocations"]),
         allocation=allocation,
         capacity=capacity,
         version=d.get("version", 1),
@@ -210,8 +216,8 @@ def _exception_from_dict(d: dict) -> LogisticsException:
 def _operation_from_dict(d: dict) -> Operation:
     return Operation(
         id=d["id"],
-        demand_id=d["demand_id"],
         plan_id=d["plan_id"],
+        allocations=_allocations_from_list(d["allocations"]),
         stages=[_stage_from_dict(s) for s in d["stages"]],
         state=OperationState(d["state"]),
         events=[_event_from_dict(e) for e in d.get("events", [])],
@@ -223,10 +229,6 @@ def _operation_from_dict(d: dict) -> Operation:
 
 def load_demands() -> dict:
     return _load_typed("demands", _demand_from_dict)
-
-
-def load_resources() -> dict:
-    return _load_typed("resources", lambda value: Resource(**value))
 
 
 def load_catalog_resources() -> dict:
