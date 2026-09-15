@@ -73,6 +73,29 @@ estrutura de dados) e passaram a ser indexados pela sua própria id (`plan_id` /
 página de uma demanda lista todas as operações que a cobrem, e a página de uma operação lista todas
 as demandas que ela transporta.
 
+### Limitação conhecida: consolidação assume o mesmo destino para todas as demandas
+
+A correção acima resolve consolidação e divisão **quando todas as demandas partilham a mesma
+origem e o mesmo destino** (é o que os testes e o `run_demo_consolidation()` cobrem). Não resolve o
+caso de **multi-drop** — um único recurso a recolher num ponto e a entregar em **destinos
+diferentes** para demandas diferentes dentro da mesma operação (ex.: um camião que entrega 3
+encomendas em 3 endereços na mesma rota).
+
+Isto acontece porque `Stage` (Etapa) não tem nenhum campo de `Point` — as etapas de uma `Operation`
+são uma lista única partilhada por todas as demandas que ela cobre. `complete_operation` marca
+**todas** as demandas da operação como entregues no momento em que a operação (e não uma etapa
+específica) é concluída, o que seria factualmente incorreto se cada demanda tivesse um destino
+diferente entregue em momentos diferentes.
+
+Isto **não é uma lacuna conceptual** do Core Logística — os elementos #4 (Ponto logístico) e #9
+(Etapa logística) já preveem exactamente isto ("recolha, transferência, armazenamento, transporte,
+entrega ou outras actividades combinadas"; um ponto pode ser origem, destino, recolha ou entrega).
+É uma lacuna de **implementação**: falta ligar `Stage` a um `Point`, e distinguir a conclusão de uma
+demanda dentro da operação da conclusão da operação como um todo. Fica documentado aqui como
+**limitação conhecida e deliberadamente não resolvida nesta fase** — não bloqueia o fecho do Nível 2
+como modelo conceptual, mas deve ser resolvido antes de qualquer consolidação com destinos
+diferentes ser usada em produção.
+
 ## Catálogo de recursos, etapas dinâmicas e eventos com localização/quantidade
 
 - **Catálogo de recursos** (`/resources`): recursos são adicionados uma vez e reutilizados em vários
